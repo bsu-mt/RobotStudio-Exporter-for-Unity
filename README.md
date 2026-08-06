@@ -4,8 +4,8 @@ A RobotStudio add-in that, in one export action, packages a robot arm assembly s
 
 This is the export side of a two-part pipeline:
 
-- **This project (`RobotStudio_Unity_Bridge`)** — a RobotStudio add-in. This is the actual product being built; the goal is for it to work with *any* RobotStudio station, not just one hardcoded demo. Designed for same-machine use first, but the export package format should not assume the importing machine is the same one that produced it (so it can move to a different machine — shared folder, USB, cloud drive, etc. — later without a redesign).
-- **[RobotStudio_Unity_Quest](https://github.com/bsu-mt/RobotStudio_Unity_Quest)** — a Unity project that imports the exported package and plays it back interactively on Quest 2 (play/pause/step, live signal inspection). It doesn't talk to RobotStudio directly; it only knows about the export package format this project defines. Right now it's a test harness for validating this add-in's output, not a polished end-user app.
+- **This project (`RobotStudio-Exporter-for-Unity`)** — a RobotStudio add-in. This is the actual product being built; the goal is for it to work with *any* RobotStudio station, not just one hardcoded demo. Designed for same-machine use first, but the export package format should not assume the importing machine is the same one that produced it (so it can move to a different machine — shared folder, USB, cloud drive, etc. — later without a redesign).
+- **[Unity-Importer-from-RobotStudio](https://github.com/bsu-mt/Unity-Importer-from-RobotStudio)** — a Unity project that imports the exported package and plays it back interactively on Quest 2 (play/pause/step, live signal inspection). It doesn't talk to RobotStudio directly; it only knows about the export package format this project defines. Right now it's a test harness for validating this add-in's output, not a polished end-user app.
 
 If you're picking this project back up in a new session: the goal right now is **research and prototyping**, not a finished tool. See "What to do in this session" below.
 
