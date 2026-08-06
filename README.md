@@ -18,7 +18,7 @@ Manual export was considered and rejected for two of the three data types: Robot
 On export, the add-in:
 
 1. **Enumerates the mechanism's links** and exports each link's geometry individually (not a single fused mesh), preserving the ability to reconstruct the kinematic hierarchy on the Unity side.
-2. **Converts geometry to a Unity-friendly format.** RobotStudio's own export formats are things like STEP/VRML/STL/IGES — not FBX/glTF. So this step is really two chained stages under the hood (RobotStudio-side export via the API, then an automated conversion pass — most likely invoking FreeCAD headlessly, matching the STEP → FreeCAD → FBX/glTF pipeline already used for the demo robot's geometry) — but still a single action from the user's perspective.
+2. **Converts geometry to a Unity-friendly format.** RobotStudio's own export formats are things like STEP/VRML/STL/IGES — not directly usable by Unity. So this step is really two chained stages under the hood (RobotStudio-side export via the API, then an automated conversion pass — most likely invoking FreeCAD headlessly, matching the STEP → FreeCAD → OBJ+MTL pipeline already used for the demo robot's geometry) — but still a single action from the user's perspective. **OBJ+MTL, not FBX/glTF**: FBX is ruled out because Unity's FBX import is Editor-only (Autodesk FBX SDK) and can't be loaded at runtime in a built Quest app, which is a hard requirement here since the importer loads export packages dynamically after the app ships. glTF is a reasonable alternative (Unity's glTFast supports runtime loading with proper PBR materials) but OBJ+MTL is simpler to generate deterministically from FreeCAD and simpler to parse at runtime, and since per-link hierarchy/animation are carried by our own manifest/timeline (not the mesh file's embedded scene graph or skeletal animation), OBJ+MTL's lack of those features costs nothing. Worth revisiting glTF later if OBJ/MTL's flat (non-PBR) materials turn out to look too plain.
 3. **Captures a joint-hierarchy manifest**: parent-child structure, per-joint local offset transforms, joint axis, and limits — enough for the Unity side to reassemble the per-link meshes into a correctly-jointed rig without hand-authoring it.
 4. **Runs the simulation and records the joint motion timeline and signal event timeline** as it plays. This step takes roughly as long as the simulation itself — it is not instantaneous like the geometry export.
 5. **Packages everything together** (link meshes + hierarchy manifest + motion timeline + signal timeline) into one export package that the Unity-side importer reads as a unit.
@@ -37,6 +37,10 @@ What the export package actually looks like on disk — a folder with a defined 
 ### 2. Geometry conversion mechanics
 
 Whether the FreeCAD conversion step is invoked automatically by the add-in as a subprocess (requires FreeCAD installed and scriptable headlessly — needs verifying), or is a separate manual/semi-automated step for now while the pipeline is being proven out.
+
+### 3. Format to watch: USD
+
+[OpenUSD](https://openusd.org/) is increasingly the standard for robot digital twins (NVIDIA Isaac Sim, ROS 2 tooling), and outclasses OBJ/glTF on hierarchy, variants, and material fidelity. Not adopted now — Unity's USD support (`com.unity.formats.usd`) is still primarily Editor-side, not mature enough for runtime loading on Quest — but worth re-evaluating if/when Unity's runtime USD tooling catches up, or if this pipeline ever needs to interoperate with ROS 2/Isaac Sim.
 
 ## What to Do in This Session
 
