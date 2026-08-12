@@ -1,7 +1,49 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>netstandard2.0</TargetFramework>
+    <!-- Matches RobotStudio 2026's own host process (Bin\RobotStudio.runtimeconfig.json: net10.0,
+         Microsoft.WindowsDesktop.App). A "General" add-in loads in-process into that host, so it
+         must target a compatible framework. -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- ABB.Robotics.RobotStudio.Environment.dll (ribbon/tool-window registration, needed once
+         we go beyond this read-only prototype) pulls in WinForms/WPF types; without this the
+         build reports a WindowsBase version conflict. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>RobotStudioUnityBridge</RootNamespace>
+    <RobotStudioBin>C:\Program Files (x86)\ABB\RobotStudio 2026\Bin</RobotStudioBin>
+    <!-- Single source of truth for the version: pack.ps1 reads this for both manifest.xml's
+         DisplayVersion and the package folder name (Name-Version, required by RobotStudio's
+         package installer). Bump this and RobotStudioUnityBridge.rsaddin's DisplayVersion (if it
+         ever gets one) together. -->
+    <Version>0.1.3</Version>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Referenced from the installed RobotStudio 2026 (the "Bin\" set, not "Bin-net48\";
+         see README "Open Design Decisions" for why). Private=false: these are supplied by the
+         RobotStudio host at load time and must not be copied into the add-in's own output. -->
+    <Reference Include="ABB.Robotics.RobotStudio">
+      <HintPath>$(RobotStudioBin)\ABB.Robotics.RobotStudio.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ABB.Robotics.RobotStudio.Stations">
+      <HintPath>$(RobotStudioBin)\ABB.Robotics.RobotStudio.Stations.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ABB.Robotics.RobotStudio.Environment">
+      <HintPath>$(RobotStudioBin)\ABB.Robotics.RobotStudio.Environment.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Must sit next to the built .dll for RobotStudio to discover the add-in. -->
+    <None Include="RobotStudioUnityBridge.rsaddin">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 
 </Project>

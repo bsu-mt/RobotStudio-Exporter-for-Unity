@@ -44,33 +44,51 @@ Whether the FreeCAD conversion step is invoked automatically by the add-in as a 
 
 ## What to Do in This Session
 
-Roughly in this order:
-
-1. **Read the RobotStudio API documentation.** RobotStudio 2026 is installed locally (see "Local Environment" below), but the in-app Help is user-facing documentation, not the developer/API reference — that lives on ABB's Developer Center (search for "RobotStudio SDK" / "RobotStudio API"). Look specifically for: how add-ins are packaged and loaded, the `Station` / `Mechanism` / `SimulationController` object model, how to enumerate/read I/O signals and their values over time, and what geometry export formats/APIs are actually available per-link (not just whole-station).
-2. **Figure out which `ABB.Robotics.*` DLL set an add-in actually needs to reference** — see the note on `Bin` vs `Bin-net48` below, since this determines the target framework for `src/RobotStudioUnityBridge/RobotStudioUnityBridge.csproj` (currently a `netstandard2.0` placeholder with no real code).
-3. **Prototype small**: get a minimal add-in that can read the demo station (see "Reference Station Data" below) and print out something simple — e.g. list of mechanisms and their joint values — before attempting any real export logic.
-4. **Verify FreeCAD can be driven headlessly** from the add-in (or decide to defer that and do geometry conversion as a manual step for now).
-5. Only after the above works, start building the real export logic: per-link geometry export, hierarchy manifest, and simulation recording.
+1. ~~Read the RobotStudio API documentation.~~ Skipped in favor of a faster path: reverse-engineering the real add-ins shipped with the local RobotStudio 2026 install (decompiling via reflection, since no internet SDK docs were consulted). See "Local Environment" below for what that turned up — it answered the `Bin` vs `Bin-net48` question and the add-in entrypoint contract directly from working examples.
+2. ~~Figure out which `ABB.Robotics.*` DLL set an add-in needs.~~ **Resolved** — see below.
+3. **Prototype small — done and verified in RobotStudio itself.** `Addin.AddinMain()` → `ExportPipeline.LogActiveStationSummary()` reads `Station.ActiveStation`, enumerates its `Mechanism`s, and logs each one's joint values to `%TEMP%\RobotStudioUnityBridge.log` (there's no console when hosted inside RobotStudio, hence the log file). `AddinMain()` only runs once, at load time, so it also subscribes to `Project.ActiveProjectChanged` to re-log when a station is opened afterward. Confirmed actually loading and running inside a real RobotStudio 2026 instance — see "Testing the Add-in" for how, and for two real gotchas hit along the way (`.rspak` packaging format, `MinimumHostVersion` version gate).
+4. **Verify FreeCAD can be driven headlessly** — not started.
+5. Real export logic (per-link geometry export, hierarchy manifest, simulation recording) — not started, blocked on step 3's in-app verification.
 
 ## Local Environment
 
 - **RobotStudio 2026** is installed at `C:\Program Files (x86)\ABB\RobotStudio 2026`.
-- It ships two separate sets of `ABB.Robotics.*.dll` assemblies:
-  - `Bin\` (modern) — includes `ABB.Robotics.RobotStudio.Stations.dll` and `ABB.Robotics.RobotStudio.Stations.Forms.dll`, which the `Bin-net48\` set does **not** have. This looks like it may be the set needed for Station-object-model access, i.e. what an add-in would use to read station contents — but this is an inference from filenames, not confirmed against documentation yet.
-  - `Bin-net48\` (legacy, .NET Framework 4.8) — includes ScreenMaker/FlexPendant SDK assemblies (`ABB.Robotics.ScreenMaker.*`) alongside a smaller RobotStudio set. Looks oriented toward FlexPendant screen development rather than RobotStudio add-ins, but again, unconfirmed.
-  - Don't assume either of the above — verify against the actual API docs before committing to a target framework.
+- **`Bin` vs `Bin-net48` — resolved.** `Bin\RobotStudio.exe` ships a `RobotStudio.runtimeconfig.json` targeting `net10.0` / `Microsoft.WindowsDesktop.App` — RobotStudio 2026's main process is a modern .NET (not .NET Framework) desktop app. `Bin-net48\RsAddinHost.exe` is a separate net48 host process, used only for legacy `AddInType=Internal` add-ins (e.g. the built-in `IOConfigurator`, `FleetManagement` — both ABB-internal, declared with an explicit `<Entrypoint>` in their `.rsaddin`). Real, general-purpose add-ins (e.g. the built-in `UsdConverter`, `AddInType=General`) live directly under `Bin\Addins\` and load in-process into the `net10.0` host. **This project targets `net10.0-windows` and references the `Bin\` assemblies** — confirmed working, `dotnet build` succeeds against them (see `src/RobotStudioUnityBridge/RobotStudioUnityBridge.csproj`).
+- **Add-in manifest format and entrypoint convention — resolved by decompiling `UsdConverter` and `IOConfigurator`** (both shipped in `Bin\Addins\`): a `.rsaddin` XML file sits next to the assembly, declaring `AddInType` (`General` for a normal in-process add-in), `Assembly/FileName`, and optionally `Entrypoint`. When `Entrypoint` is omitted (as in `UsdConverter.rsaddin`), RobotStudio finds the entrypoint by convention: a type named `Addin` with a method `AddinMain()` — confirmed by reflecting over `UsdConverter.dll`, which has exactly `UsdConverter.Addin.AddinMain()` as a static method. This project's manifest (`RobotStudioUnityBridge.rsaddin`) and entrypoint (`Addin.cs`) follow that same convention.
+- **Station object model, enough for the prototype and beyond:** `ABB.Robotics.RobotStudio.Stations.Station.ActiveStation` (static) → `.GraphicComponents` (`IEnumerable<GraphicComponent>`, `Mechanism : GraphicComponent`) → per-`Mechanism` `GetJointValues()`, `NumActiveJoints`, `GetJointTypes()`, `GetJointLimits()`, `GetParentLink()`, `GetJointTransform()`. Also found directly on `Station`: `.IOSignals` (`IOSignalCollection`) plus `IOSignalChanged`/`IOSignalValueChanged` events — meaning the I/O signal timeline can likely be captured straight from the `Station`, without going through a separate virtual-controller connection (`ABB.Robotics.Controllers.PC.dll`'s `IOSystemDomain.Signal`, which also exists but looks like the wrong layer for this). Have **not** yet found a `SimulationController` type under that exact name — worth another reflection pass (or real docs) once simulation recording is being built.
 - Reference/demo RobotStudio content is at `D:\Projects\Models\RobotStudio\`:
   - `DemoProject.rspag` — a Pack & Go of the demo station
   - `Demo\Stations\`, `Demo\Libraries\`, `Demo\Virtual Controllers\`, `Demo\Backups\` — the unpacked station content
   - `IRB4600_40kg-255_IRC5_rev05_STEP_j\` — per-link STEP CAD files for the IRB4600 (the placeholder robot model currently used; real target hardware is an IRB5720)
+- `dotnet --list-sdks` confirms the .NET 10 SDK (`10.0.302`) and `Microsoft.WindowsDesktop.App 10.0.10` runtime are installed locally, matching what the add-in needs to build/run against.
+
+## Testing the Add-in
+
+There's no "Add-in path" option in RobotStudio 2026's UI (an earlier guess in this doc was wrong). Installing is done via the **Add-Ins ribbon tab → Install** button, which only accepts `.rspak` (or `.rmf`) files, not a bare `.rsaddin`. Steps:
+
+1. `.\pack.ps1` from the repo root — builds the add-in and produces `dist/RobotStudioUnityBridge-<version>.rspak`.
+2. In RobotStudio: **Add-Ins tab → Install**, pick that `.rspak`.
+3. Restart RobotStudio (autoload happens at startup), then open any station. Check `%TEMP%\RobotStudioUnityBridge.log` for the mechanism/joint-value dump.
+
+Two real gotchas hit while getting this working (both reverse-engineered by decompiling `RobotStudio.dll`/`ABB.Robotics.RobotStudio.dll` with `ilspycmd`, since this is undocumented):
+
+- **`.rspak` layout is strict.** The zip must contain a top-level `<Name>-<Version>/` folder (e.g. `RobotStudioUnityBridge-0.1.3/`) holding `manifest.xml` directly inside it, with the add-in itself under `<that folder>/RobotStudio/Add-In/`. A `manifest.xml` sitting at the zip root (no wrapping folder) fails validation with "is not a valid distribution package" — `RspakMetadata.ExtractMetadata` requires the `manifest.xml` entry's path to have exactly one path separator. `pack.ps1` reproduces this layout.
+- **`MinimumHostVersion` (in the `.rsaddin`) and `MinClientVersion` (in `manifest.xml`) must both be ≥ `26.1`.** RobotStudio's `AddinManager.IsRuntimeCompatible` treats either of these fields, if present, as a shortcut signal for "modern .NET add-in, skip the reflection-based compat check" — but only if the value is at or above some internal "first .NET-hosted RobotStudio version" threshold. We initially used `26.0` (a guess) and got a hard "Not compatible with this version of RobotStudio" with no other explanation; `26.1` (matching the real `UsdConverter.rsaddin`) fixed it immediately. If this breaks again on a future RobotStudio version, bump both.
+
+Also worth knowing: `AddinMain()` runs exactly once, when the add-in loads (which for a `Dependencies=Station` add-in happens the first time RobotStudio's station subsystem initializes — in practice, at startup, not tied to any specific station being open). It does **not** re-run for every station opened afterward; that's why `Addin.cs` separately subscribes to `Project.ActiveProjectChanged`.
 
 ## Status
 
-Not started — skeleton only, no RobotStudio API integration code yet.
+Minimal add-in prototype written, builds clean, **and confirmed loading and running inside a real RobotStudio 2026 instance** — reads the active station's mechanisms and joint values, logs them to a file, re-runs when a new station is opened. No real export logic yet.
 
 ## Project Layout
 
 ```
-src/RobotStudioUnityBridge/   .NET class library skeleton (currently netstandard2.0 placeholder;
-                               target framework will be finalized once the delivery mechanism is chosen)
+pack.ps1                          builds + packages the add-in into dist/*.rspak (see "Testing the Add-in")
+src/RobotStudioUnityBridge/
+  RobotStudioUnityBridge.csproj   net10.0-windows, references Bin\ABB.Robotics.RobotStudio*.dll; <Version> here
+                                   is pack.ps1's source of truth for the package version
+  RobotStudioUnityBridge.rsaddin  add-in manifest (AddInType=General, copied next to the built .dll)
+  Addin.cs                        RobotStudio-facing entrypoint (Addin.AddinMain())
+  ExportPipeline.cs               the actual pipeline logic; currently just the read-only prototype
 ```
