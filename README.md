@@ -34,9 +34,9 @@ What the export package actually looks like on disk — a folder with a defined 
 - Sampling rate/density needed for the joint timeline (currently only start/end per segment is available from the demo station; a denser timeline will eventually come from a MoveIt integration upstream — the schema should accommodate that without rework)
 - RobotStudio's exact coordinate/axis convention (WorkObject orientation) for a station, so the Unity-side coordinate transform is derived precisely rather than guessed by trial and error
 
-### 2. Geometry conversion mechanics
+### 2. Geometry conversion mechanics — resolved, no longer an open question
 
-Whether the FreeCAD conversion step is invoked automatically by the add-in as a subprocess (requires FreeCAD installed and scriptable headlessly — needs verifying), or is a separate manual/semi-automated step for now while the pipeline is being proven out.
+No FreeCAD/STEP conversion needed. RobotStudio ships its own OBJ+MTL exporter (`RobotStudio.Services.GraphicConverters.dll`, `WavefrontObj.ObjGraphicConverter`/`ObjExporter`, found by decompiling), reachable directly from the public API via `Part.SaveAs("foo.obj")`. It already converts RobotStudio's Z-up coordinate system to Y-up on the way out, which is the convention Unity expects. `ExportPipeline.ExportGeometry()` uses this — see "Status".
 
 ### 3. Format to watch: USD
 
@@ -47,8 +47,11 @@ Whether the FreeCAD conversion step is invoked automatically by the add-in as a 
 1. ~~Read the RobotStudio API documentation.~~ Skipped in favor of a faster path: reverse-engineering the real add-ins shipped with the local RobotStudio 2026 install (decompiling via reflection, since no internet SDK docs were consulted). See "Local Environment" below for what that turned up — it answered the `Bin` vs `Bin-net48` question and the add-in entrypoint contract directly from working examples.
 2. ~~Figure out which `ABB.Robotics.*` DLL set an add-in needs.~~ **Resolved** — see below.
 3. **Prototype small — done and verified in RobotStudio itself.** `Addin.AddinMain()` → `ExportPipeline.LogActiveStationSummary()` reads `Station.ActiveStation`, enumerates its `Mechanism`s, and logs each one's joint values to `%TEMP%\RobotStudioUnityBridge.log` (there's no console when hosted inside RobotStudio, hence the log file). `AddinMain()` only runs once, at load time, so it also subscribes to `Project.ActiveProjectChanged` to re-log when a station is opened afterward. Confirmed actually loading and running inside a real RobotStudio 2026 instance — see "Testing the Add-in" for how, and for two real gotchas hit along the way (`.rspak` packaging format, `MinimumHostVersion` version gate).
-4. **Verify FreeCAD can be driven headlessly** — not started.
-5. Real export logic (per-link geometry export, hierarchy manifest, simulation recording) — not started, blocked on step 3's in-app verification.
+4. ~~Verify FreeCAD can be driven headlessly~~ **Moot — no FreeCAD needed, see "Open Design Decisions" #2.**
+5. Real export logic:
+   - **Joint + I/O signal timeline recording — done and verified.** A ribbon button ("Record Motion + I/O") toggles `TimelineRecorder.Start()`/`.Stop()`, which subscribes to `Mechanism.AnyJointValuesChanged` (static event, fires for any mechanism in the station) and `Station.IOSignalValueChanged`, writing a JSON-lines timeline to `%TEMP%\RobotStudioUnityBridge.timeline.jsonl`. Verified end-to-end by jogging a joint via RobotStudio's Freehand jog while recording.
+   - **Per-link geometry export — done and verified.** A second ribbon button ("Export Geometry") walks every `Mechanism`'s `GraphicComponents` (its links, in link-index order), recursively finds `Part`s with actual mesh (`part.Mesh.GetInfo().NumberOfTriangles > 0` — matches the check RobotStudio's own exporter uses internally), and calls `part.SaveAs(...)` per part to produce OBJ+MTL, plus a `manifest.json` per mechanism recording each link's index, name, parent joint index, and exported files. Verified against the demo IRB4600: 7 links exported correctly, including links with multiple sub-parts (CAD body + cable geometry).
+   - **Not started:** the on-disk package format that bundles geometry + hierarchy manifest + timeline into one deliverable (see "Open Design Decisions" #1); table/timber-board placeholder geometry; anything on the Unity-importer side.
 
 ## Local Environment
 
@@ -79,7 +82,7 @@ Also worth knowing: `AddinMain()` runs exactly once, when the add-in loads (whic
 
 ## Status
 
-Minimal add-in prototype written, builds clean, **and confirmed loading and running inside a real RobotStudio 2026 instance** — reads the active station's mechanisms and joint values, logs them to a file, re-runs when a new station is opened. No real export logic yet.
+Add-in loads and runs inside a real RobotStudio 2026 instance, with a "Unity Bridge" ribbon tab exposing two working actions: **Record Motion + I/O** (joint + I/O signal timeline, JSON-lines) and **Export Geometry** (per-link OBJ+MTL + hierarchy manifest.json), both verified against the demo IRB4600 station. Still missing before this is a real hand-off-able deliverable: a package format that bundles the two together, and anything on the Unity-importer side.
 
 ## Project Layout
 
@@ -89,6 +92,7 @@ src/RobotStudioUnityBridge/
   RobotStudioUnityBridge.csproj   net10.0-windows, references Bin\ABB.Robotics.RobotStudio*.dll; <Version> here
                                    is pack.ps1's source of truth for the package version
   RobotStudioUnityBridge.rsaddin  add-in manifest (AddInType=General, copied next to the built .dll)
-  Addin.cs                        RobotStudio-facing entrypoint (Addin.AddinMain())
-  ExportPipeline.cs               the actual pipeline logic; currently just the read-only prototype
+  Addin.cs                        RobotStudio-facing entrypoint (Addin.AddinMain()), registers the ribbon tab/buttons
+  ExportPipeline.cs               LogActiveStationSummary() (prototype) + ExportGeometry() (per-link OBJ+MTL export)
+  TimelineRecorder.cs             joint + I/O signal timeline recording (Start()/Stop())
 ```
