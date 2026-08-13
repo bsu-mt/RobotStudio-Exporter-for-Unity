@@ -27,12 +27,23 @@ On export, the add-in:
 
 Nothing below is decided yet — these are the questions the next session should work through, ideally by reading RobotStudio API docs and experimenting, not by guessing.
 
-### 1. Exact packaging/file format
+### 1. Exact packaging/file format — first cut done, not final
 
-What the export package actually looks like on disk — a folder with a defined layout, a single zip, or something else — and the exact schema for the joint-hierarchy manifest, joint motion timeline, and signal event timeline, designed to match what the Unity-side importer expects. Open questions carried over from earlier discussion:
+`ExportPipeline.ExportPackage()` bundles a folder per export (`%TEMP%\RobotStudioUnityBridge\export\<timestamp>\`):
 
-- Sampling rate/density needed for the joint timeline (currently only start/end per segment is available from the demo station; a denser timeline will eventually come from a MoveIt integration upstream — the schema should accommodate that without rework)
-- RobotStudio's exact coordinate/axis convention (WorkObject orientation) for a station, so the Unity-side coordinate transform is derived precisely rather than guessed by trial and error
+```
+package.json              schemaVersion, exportedAt, station name, timelineIncluded, per-mechanism list
+motion_timeline.jsonl     copy of whatever TimelineRecorder captured (absent if nothing was recorded first)
+geometry/<mechanism>/
+  manifest.json           per-link index/name/parentJoint/files (see "Status")
+  link0_*.obj/.mtl, ...
+```
+
+Still open:
+
+- Is a loose folder the right final shape, or should this be zipped (like the `.rspak` packaging) for a cleaner one-file hand-off?
+- Sampling rate/density needed for the joint timeline (currently event-driven — one line per `AnyJointValuesChanged` firing, which in practice is dense during a jog/simulation; a denser timeline will eventually come from a MoveIt integration upstream — the schema should accommodate that without rework)
+- RobotStudio's exact coordinate/axis convention (WorkObject orientation) for a station, so the Unity-side coordinate transform is derived precisely rather than guessed by trial and error — geometry itself is already confirmed Y-up (see "Status"), this is about the *timeline*'s joint-to-world transforms
 
 ### 2. Geometry conversion mechanics — resolved, no longer an open question
 
@@ -82,7 +93,9 @@ Also worth knowing: `AddinMain()` runs exactly once, when the add-in loads (whic
 
 ## Status
 
-Add-in loads and runs inside a real RobotStudio 2026 instance, with a "Unity Bridge" ribbon tab exposing two working actions: **Record Motion + I/O** (joint + I/O signal timeline, JSON-lines) and **Export Geometry** (per-link OBJ+MTL + hierarchy manifest.json), both verified against the demo IRB4600 station. Still missing before this is a real hand-off-able deliverable: a package format that bundles the two together, and anything on the Unity-importer side.
+Add-in loads and runs inside a real RobotStudio 2026 instance, with a "Unity Bridge" ribbon tab exposing three working actions: **Record Motion + I/O** (joint + I/O signal timeline, JSON-lines, toggle), **Export Geometry** (per-link OBJ+MTL + hierarchy manifest.json, standalone/for quick iteration), and **Export Package** (bundles a fresh geometry export with whatever's currently recorded into one timestamped folder under `%TEMP%\RobotStudioUnityBridge\export\`, plus a top-level `package.json` — see "Open Design Decisions" #1 for the exact layout). All three verified against the demo IRB4600 station. Still missing before this is a real hand-off-able deliverable: deciding whether the package should be zipped, and anything on the Unity-importer side.
+
+Reminder for whoever repackages: RobotStudio's Add-Ins → Install refuses to reinstall an unchanged `<Version>` in the `.csproj` — bump it every time before `pack.ps1`.
 
 ## Project Layout
 
@@ -93,6 +106,7 @@ src/RobotStudioUnityBridge/
                                    is pack.ps1's source of truth for the package version
   RobotStudioUnityBridge.rsaddin  add-in manifest (AddInType=General, copied next to the built .dll)
   Addin.cs                        RobotStudio-facing entrypoint (Addin.AddinMain()), registers the ribbon tab/buttons
-  ExportPipeline.cs               LogActiveStationSummary() (prototype) + ExportGeometry() (per-link OBJ+MTL export)
+  ExportPipeline.cs               LogActiveStationSummary() (prototype), ExportGeometry() (per-link OBJ+MTL),
+                                   ExportPackage() (bundles geometry + recorded timeline into one folder)
   TimelineRecorder.cs             joint + I/O signal timeline recording (Start()/Stop())
 ```

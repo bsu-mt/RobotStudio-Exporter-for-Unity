@@ -17,6 +17,7 @@ public static class ExportPipeline
 {
     private static readonly string LogPath = Path.Combine(Path.GetTempPath(), "RobotStudioUnityBridge.log");
     private static readonly string GeometryRoot = Path.Combine(Path.GetTempPath(), "RobotStudioUnityBridge", "geometry");
+    private static readonly string PackageRoot = Path.Combine(Path.GetTempPath(), "RobotStudioUnityBridge", "export");
 
     public static void LogActiveStationSummary()
     {
@@ -56,13 +57,68 @@ public static class ExportPipeline
 
         foreach (var mechanism in station.GraphicComponents.OfType<Mechanism>())
         {
-            ExportMechanismGeometry(mechanism);
+            var dir = Path.Combine(GeometryRoot, SanitizeFileName(mechanism.DisplayName));
+            ExportMechanismGeometry(mechanism, dir);
         }
     }
 
-    private static void ExportMechanismGeometry(Mechanism mechanism)
+    /// <summary>
+    /// Bundles a full hand-off package for one station: per-mechanism geometry (same as
+    /// ExportGeometry, but written under the package folder) plus a copy of whatever's currently
+    /// in the motion/I-O timeline file, tied together by a top-level package.json. This is the
+    /// "one export action" the project's design settled on -- record a timeline first (separate
+    /// ribbon toggle, since that has to run live while the robot moves), then call this to bundle
+    /// everything recorded so far with a fresh geometry export.
+    /// </summary>
+    public static void ExportPackage()
     {
-        var dir = Path.Combine(GeometryRoot, SanitizeFileName(mechanism.DisplayName));
+        var station = Station.ActiveStation;
+        if (station is null)
+        {
+            Log("ExportPackage: no active station.");
+            return;
+        }
+
+        var packageDir = Path.Combine(PackageRoot, DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture));
+        var geometryDir = Path.Combine(packageDir, "geometry");
+        Directory.CreateDirectory(geometryDir);
+
+        var mechanismEntries = new List<string>();
+        foreach (var mechanism in station.GraphicComponents.OfType<Mechanism>())
+        {
+            var name = SanitizeFileName(mechanism.DisplayName);
+            var dir = Path.Combine(geometryDir, name);
+            ExportMechanismGeometry(mechanism, dir);
+            mechanismEntries.Add($"{{\"name\":\"{JsonEscape(mechanism.DisplayName)}\",\"geometryFolder\":\"geometry/{JsonEscape(name)}\"}}");
+        }
+
+        var timelineIncluded = false;
+        if (File.Exists(TimelineRecorder.OutputPath))
+        {
+            File.Copy(TimelineRecorder.OutputPath, Path.Combine(packageDir, "motion_timeline.jsonl"), overwrite: true);
+            timelineIncluded = true;
+        }
+        else
+        {
+            Log("ExportPackage: no recorded timeline found -- click 'Record Motion + I/O' before exporting to include one.");
+        }
+
+        var package = new StringBuilder();
+        package.AppendLine("{");
+        package.AppendLine("  \"schemaVersion\":1,");
+        package.AppendLine($"  \"exportedAt\":\"{DateTime.Now:O}\",");
+        package.AppendLine($"  \"station\":\"{JsonEscape(station.Name)}\",");
+        package.AppendLine($"  \"timelineIncluded\":{(timelineIncluded ? "true" : "false")},");
+        package.AppendLine($"  \"timelineFile\":{(timelineIncluded ? "\"motion_timeline.jsonl\"" : "null")},");
+        package.AppendLine("  \"mechanisms\":[" + string.Join(",", mechanismEntries) + "]");
+        package.AppendLine("}");
+        File.WriteAllText(Path.Combine(packageDir, "package.json"), package.ToString());
+
+        Log($"ExportPackage: wrote package to '{packageDir}' (timeline included: {timelineIncluded}).");
+    }
+
+    private static void ExportMechanismGeometry(Mechanism mechanism, string dir)
+    {
         Directory.CreateDirectory(dir);
 
         var linkEntries = new List<string>();

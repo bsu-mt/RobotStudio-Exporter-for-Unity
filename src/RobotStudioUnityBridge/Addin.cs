@@ -13,6 +13,7 @@ public static class Addin
 {
     private const string RecordButtonId = "RobotStudioUnityBridge.ToggleRecording";
     private const string ExportGeometryButtonId = "RobotStudioUnityBridge.ExportGeometry";
+    private const string ExportPackageButtonId = "RobotStudioUnityBridge.ExportPackage";
 
     public static void AddinMain()
     {
@@ -71,8 +72,24 @@ public static class Addin
             DefaultEnabled = true,
         };
 
+        var exportPackageButton = new CommandBarButton(
+            ExportPackageButtonId,
+            "Export Package",
+            onUpdate: args =>
+            {
+                args.Enabled = true;
+            },
+            onExecute: args =>
+            {
+                ExportPipeline.ExportPackage();
+            })
+        {
+            DefaultEnabled = true,
+        };
+
         group.Controls.Add(recordButton);
         group.Controls.Add(exportGeometryButton);
+        group.Controls.Add(exportPackageButton);
         tab.Groups.Add(group);
         UIEnvironment.RibbonTabs.Add(tab);
     }
