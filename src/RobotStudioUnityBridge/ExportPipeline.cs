@@ -63,6 +63,18 @@ public static class ExportPipeline
     }
 
     /// <summary>
+    /// Where a package export lands if the user doesn't override it: next to the station file
+    /// (so the export travels with the project), or under %TEMP% as a fallback for an unsaved
+    /// station.
+    /// </summary>
+    public static string GetDefaultExportRoot()
+    {
+        var station = Station.ActiveStation;
+        var stationDir = station?.FileInfo?.DirectoryName;
+        return stationDir is not null ? Path.Combine(stationDir, "UnityExport") : PackageRoot;
+    }
+
+    /// <summary>
     /// Bundles a full hand-off package for one station: per-mechanism geometry (same as
     /// ExportGeometry, but written under the package folder) plus a copy of whatever's currently
     /// in the motion/I-O timeline file, tied together by a top-level package.json. This is the
@@ -70,7 +82,12 @@ public static class ExportPipeline
     /// ribbon toggle, since that has to run live while the robot moves), then call this to bundle
     /// everything recorded so far with a fresh geometry export.
     /// </summary>
-    public static void ExportPackage()
+    /// <param name="exportRoot">
+    /// Destination root; each call creates its own timestamped subfolder underneath. Defaults to
+    /// <see cref="GetDefaultExportRoot"/> when null (the caller/UI is expected to let the user
+    /// override this).
+    /// </param>
+    public static void ExportPackage(string? exportRoot = null)
     {
         var station = Station.ActiveStation;
         if (station is null)
@@ -79,7 +96,8 @@ public static class ExportPipeline
             return;
         }
 
-        var packageDir = Path.Combine(PackageRoot, DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture));
+        var root = exportRoot ?? GetDefaultExportRoot();
+        var packageDir = Path.Combine(root, DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture));
         var geometryDir = Path.Combine(packageDir, "geometry");
         Directory.CreateDirectory(geometryDir);
 

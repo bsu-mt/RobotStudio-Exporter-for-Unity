@@ -18,7 +18,7 @@
          DisplayVersion and the package folder name (Name-Version, required by RobotStudio's
          package installer). Bump this and RobotStudioUnityBridge.rsaddin's DisplayVersion (if it
          ever gets one) together. -->
-    <Version>0.1.8</Version>
+    <Version>0.1.9</Version>
   </PropertyGroup>
 
   <ItemGroup>

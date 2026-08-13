@@ -1,3 +1,5 @@
+using System.IO;
+using System.Windows.Forms;
 using ABB.Robotics.RobotStudio;
 using ABB.Robotics.RobotStudio.Environment;
 
@@ -81,7 +83,22 @@ public static class Addin
             },
             onExecute: args =>
             {
-                ExportPipeline.ExportPackage();
+                var defaultRoot = ExportPipeline.GetDefaultExportRoot();
+                Directory.CreateDirectory(defaultRoot);
+
+                using var dialog = new FolderBrowserDialog
+                {
+                    Description = "Choose where to export (defaults to a UnityExport folder next to the station file)",
+                    SelectedPath = defaultRoot,
+                    ShowNewFolderButton = true,
+                };
+
+                if (dialog.ShowDialog(UIEnvironment.MainWindow) != DialogResult.OK)
+                {
+                    return;
+                }
+
+                ExportPipeline.ExportPackage(dialog.SelectedPath);
             })
         {
             DefaultEnabled = true,
