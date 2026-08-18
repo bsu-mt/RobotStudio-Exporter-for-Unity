@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Text;
+using System.Text.Json;
 using ABB.Robotics.Math;
 using ABB.Robotics.RobotStudio.Stations;
 
@@ -102,13 +102,13 @@ public static class ExportPipeline
         var geometryDir = Path.Combine(packageDir, "geometry");
         Directory.CreateDirectory(geometryDir);
 
-        var mechanismEntries = new List<string>();
+        var mechanismEntries = new List<(string Name, string GeometryFolder)>();
         foreach (var mechanism in station.GraphicComponents.OfType<Mechanism>())
         {
             var name = SanitizeFileName(mechanism.DisplayName);
             var dir = Path.Combine(geometryDir, name);
             ExportMechanismGeometry(mechanism, dir);
-            mechanismEntries.Add($"{{\"name\":\"{JsonEscape(mechanism.DisplayName)}\",\"geometryFolder\":\"geometry/{JsonEscape(name)}\"}}");
+            mechanismEntries.Add((mechanism.DisplayName, $"geometry/{name}"));
         }
 
         var timelineIncluded = false;
@@ -122,16 +122,35 @@ public static class ExportPipeline
             Log("ExportPackage: no recorded timeline found -- click 'Record Motion + I/O' before exporting to include one.");
         }
 
-        var package = new StringBuilder();
-        package.AppendLine("{");
-        package.AppendLine("  \"schemaVersion\":1,");
-        package.AppendLine($"  \"exportedAt\":\"{DateTime.Now:O}\",");
-        package.AppendLine($"  \"station\":\"{JsonEscape(station.Name)}\",");
-        package.AppendLine($"  \"timelineIncluded\":{(timelineIncluded ? "true" : "false")},");
-        package.AppendLine($"  \"timelineFile\":{(timelineIncluded ? "\"motion_timeline.jsonl\"" : "null")},");
-        package.AppendLine("  \"mechanisms\":[" + string.Join(",", mechanismEntries) + "]");
-        package.AppendLine("}");
-        File.WriteAllText(Path.Combine(packageDir, "package.json"), package.ToString());
+        using (var stream = File.Create(Path.Combine(packageDir, "package.json")))
+        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("schemaVersion", 1);
+            writer.WriteString("exportedAt", DateTime.Now.ToString("O", CultureInfo.InvariantCulture));
+            writer.WriteString("station", station.Name);
+            writer.WriteBoolean("timelineIncluded", timelineIncluded);
+            if (timelineIncluded)
+            {
+                writer.WriteString("timelineFile", "motion_timeline.jsonl");
+            }
+            else
+            {
+                writer.WriteNull("timelineFile");
+            }
+
+            writer.WriteStartArray("mechanisms");
+            foreach (var entry in mechanismEntries)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("name", entry.Name);
+                writer.WriteString("geometryFolder", entry.GeometryFolder);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+
+            writer.WriteEndObject();
+        }
 
         Log($"ExportPackage: wrote package to '{packageDir}' (timeline included: {timelineIncluded}).");
     }
@@ -151,7 +170,7 @@ public static class ExportPipeline
             linkIndexByComponent[link] = linkIndex++;
         }
 
-        var linkEntries = new List<string>();
+        var linkEntries = new List<LinkEntry>();
         linkIndex = 0;
 
         foreach (var link in mechanism.GraphicComponents)
@@ -192,36 +211,57 @@ public static class ExportPipeline
                 }
             }
 
-            var inv = CultureInfo.InvariantCulture;
-            linkEntries.Add(
-                "    {" +
-                $"\"index\":{linkIndex},\"name\":\"{JsonEscape(link.DisplayName)}\"," +
-                $"\"parentJoint\":{(hasParentJoint ? jointIndex.ToString(inv) : "-1")}," +
-                $"\"parentLink\":{parentLinkIndex.ToString(inv)}," +
-                // Local position/rotation relative to parentLink (or to the mechanism root when
-                // parentLink is -1), already converted to Unity's Y-up/left-handed convention --
-                // same (x, z, -y) axis remap RobotStudio's own OBJ exporter uses for vertices, see
-                // ConvertTransformToUnity. Same raw units as the OBJ vertices (unverified which --
-                // whatever it is, it's consistent between the two, since neither path rescales).
-                // Fixed-point (not "R"/general format) so this never emits scientific notation --
-                // JSON allows it, but keeping it out avoids relying on the Unity-side JSON parser
-                // handling it correctly.
-                $"\"localPosition\":[{px.ToString("F6", inv)},{py.ToString("F6", inv)},{pz.ToString("F6", inv)}]," +
-                $"\"localRotation\":[{qx.ToString("F6", inv)},{qy.ToString("F6", inv)},{qz.ToString("F6", inv)},{qw.ToString("F6", inv)}]," +
-                $"\"files\":[{string.Join(",", files.Select(f => $"\"{JsonEscape(f)}\""))}]" +
-                "}");
+            // Local position/rotation relative to parentLink (or to the mechanism root when
+            // parentLink is -1), already converted to Unity's Y-up/left-handed convention --
+            // same (x, z, -y) axis remap RobotStudio's own OBJ exporter uses for vertices, see
+            // ConvertTransformToUnity. Same raw units as the OBJ vertices (unverified which --
+            // whatever it is, it's consistent between the two, since neither path rescales).
+            // Fixed-point (not "R"/general format) so this never emits scientific notation --
+            // JSON allows it, but keeping it out avoids relying on the Unity-side JSON parser
+            // handling it correctly.
+            linkEntries.Add(new LinkEntry(
+                linkIndex, link.DisplayName, hasParentJoint ? jointIndex : -1, parentLinkIndex,
+                px, py, pz, qx, qy, qz, qw, files));
 
             linkIndex++;
         }
 
-        var manifest = new StringBuilder();
-        manifest.AppendLine("{");
-        manifest.AppendLine($"  \"mechanism\":\"{JsonEscape(mechanism.DisplayName)}\",");
-        manifest.AppendLine("  \"links\":[");
-        manifest.AppendLine(string.Join(",\n", linkEntries));
-        manifest.AppendLine("  ]");
-        manifest.AppendLine("}");
-        File.WriteAllText(Path.Combine(dir, "manifest.json"), manifest.ToString());
+        using (var stream = File.Create(Path.Combine(dir, "manifest.json")))
+        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+        {
+            var inv = CultureInfo.InvariantCulture;
+            writer.WriteStartObject();
+            writer.WriteString("mechanism", mechanism.DisplayName);
+            writer.WriteStartArray("links");
+            foreach (var entry in linkEntries)
+            {
+                writer.WriteStartObject();
+                writer.WriteNumber("index", entry.Index);
+                writer.WriteString("name", entry.Name);
+                writer.WriteNumber("parentJoint", entry.ParentJoint);
+                writer.WriteNumber("parentLink", entry.ParentLink);
+                writer.WriteStartArray("localPosition");
+                writer.WriteRawValue(entry.Px.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(entry.Py.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(entry.Pz.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteEndArray();
+                writer.WriteStartArray("localRotation");
+                writer.WriteRawValue(entry.Qx.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(entry.Qy.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(entry.Qz.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(entry.Qw.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteEndArray();
+                writer.WriteStartArray("files");
+                foreach (var f in entry.Files)
+                {
+                    writer.WriteStringValue(f);
+                }
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
 
         Log($"ExportGeometry: exported {linkIndex} link(s) for mechanism '{mechanism.DisplayName}' to '{dir}'.");
     }
@@ -286,7 +326,10 @@ public static class ExportPipeline
         return new string(chars);
     }
 
-    private static string JsonEscape(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    private readonly record struct LinkEntry(
+        int Index, string Name, int ParentJoint, int ParentLink,
+        double Px, double Py, double Pz, double Qx, double Qy, double Qz, double Qw,
+        List<string> Files);
 
     private static void Log(string message)
     {

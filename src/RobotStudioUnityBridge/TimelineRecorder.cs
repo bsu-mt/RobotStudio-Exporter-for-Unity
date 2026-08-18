@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Text.Json;
 using ABB.Robotics.RobotStudio.Stations;
 
 namespace RobotStudioUnityBridge;
@@ -21,6 +22,8 @@ public static class TimelineRecorder
     private static readonly object Sync = new();
     private static DateTime _startedAt;
     private static StreamWriter? _writer;
+    private static readonly MemoryStream LineBuffer = new();
+    private static readonly Utf8JsonWriter JsonLineWriter = new(LineBuffer);
 
     public static void Start()
     {
@@ -42,7 +45,12 @@ public static class TimelineRecorder
                 station.IOSignalValueChanged += OnIOSignalValueChanged;
             }
 
-            WriteLine("{\"type\":\"start\",\"t\":0}");
+            WriteRecord(w =>
+            {
+                w.WriteString("type", "start");
+                w.WritePropertyName("t");
+                w.WriteRawValue("0", skipInputValidation: true);
+            });
         }
     }
 
@@ -62,7 +70,13 @@ public static class TimelineRecorder
                 station.IOSignalValueChanged -= OnIOSignalValueChanged;
             }
 
-            WriteLine($"{{\"type\":\"stop\",\"t\":{ElapsedSeconds().ToString("F3", CultureInfo.InvariantCulture)}}}");
+            var elapsed = ElapsedSeconds().ToString("F3", CultureInfo.InvariantCulture);
+            WriteRecord(w =>
+            {
+                w.WriteString("type", "stop");
+                w.WritePropertyName("t");
+                w.WriteRawValue(elapsed, skipInputValidation: true);
+            });
 
             _writer?.Dispose();
             _writer = null;
@@ -78,16 +92,43 @@ public static class TimelineRecorder
         }
 
         var jointValues = mechanism.GetJointValues();
-        var values = string.Join(",", Array.ConvertAll(jointValues, v => v.ToString("F6", CultureInfo.InvariantCulture)));
-        WriteLine($"{{\"type\":\"joint\",\"t\":{ElapsedSeconds().ToString("F3", CultureInfo.InvariantCulture)}," +
-                  $"\"mechanism\":\"{Escape(mechanism.DisplayName)}\",\"values\":[{values}]}}");
+        var elapsed = ElapsedSeconds().ToString("F3", CultureInfo.InvariantCulture);
+        WriteRecord(w =>
+        {
+            w.WriteString("type", "joint");
+            w.WritePropertyName("t");
+            w.WriteRawValue(elapsed, skipInputValidation: true);
+            w.WriteString("mechanism", mechanism.DisplayName);
+            w.WriteStartArray("values");
+            foreach (var v in jointValues)
+            {
+                w.WriteRawValue(v.ToString("F6", CultureInfo.InvariantCulture), skipInputValidation: true);
+            }
+            w.WriteEndArray();
+        });
     }
 
     private static void OnIOSignalValueChanged(object? sender, IOSignalChangedEventArgs e)
     {
         var signal = e.Signal;
-        WriteLine($"{{\"type\":\"signal\",\"t\":{ElapsedSeconds().ToString("F3", CultureInfo.InvariantCulture)}," +
-                  $"\"name\":\"{Escape(signal.Name)}\",\"value\":{FormatValue(signal.Value)}}}");
+        var elapsed = ElapsedSeconds().ToString("F3", CultureInfo.InvariantCulture);
+        var formattedValue = FormatValue(signal.Value);
+        WriteRecord(w =>
+        {
+            w.WriteString("type", "signal");
+            w.WritePropertyName("t");
+            w.WriteRawValue(elapsed, skipInputValidation: true);
+            w.WriteString("name", signal.Name);
+            w.WritePropertyName("value");
+            if (formattedValue == "null")
+            {
+                w.WriteNullValue();
+            }
+            else
+            {
+                w.WriteRawValue(formattedValue, skipInputValidation: true);
+            }
+        });
     }
 
     private static double ElapsedSeconds() => (DateTime.UtcNow - _startedAt).TotalSeconds;
@@ -98,13 +139,23 @@ public static class TimelineRecorder
         _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? "null",
     };
 
-    private static string Escape(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
-
-    private static void WriteLine(string json)
+    private static void WriteRecord(Action<Utf8JsonWriter> writeFields)
     {
         lock (Sync)
         {
-            _writer?.WriteLine(json);
+            if (_writer is null)
+            {
+                return;
+            }
+
+            LineBuffer.SetLength(0);
+            JsonLineWriter.Reset(LineBuffer);
+            JsonLineWriter.WriteStartObject();
+            writeFields(JsonLineWriter);
+            JsonLineWriter.WriteEndObject();
+            JsonLineWriter.Flush();
+
+            _writer.WriteLine(Encoding.UTF8.GetString(LineBuffer.GetBuffer(), 0, (int)LineBuffer.Length));
         }
     }
 }
