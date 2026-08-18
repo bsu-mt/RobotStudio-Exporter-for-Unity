@@ -18,7 +18,7 @@
          DisplayVersion and the package folder name (Name-Version, required by RobotStudio's
          package installer). Bump this and RobotStudioUnityBridge.rsaddin's DisplayVersion (if it
          ever gets one) together. -->
-    <Version>0.1.9</Version>
+    <Version>0.1.12</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -35,6 +35,10 @@
     </Reference>
     <Reference Include="ABB.Robotics.RobotStudio.Environment">
       <HintPath>$(RobotStudioBin)\ABB.Robotics.RobotStudio.Environment.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ABB.Robotics.Math">
+      <HintPath>$(RobotStudioBin)\ABB.Robotics.Math.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
