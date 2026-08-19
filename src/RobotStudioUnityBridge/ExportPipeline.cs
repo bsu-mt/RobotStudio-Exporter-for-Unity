@@ -3,9 +3,11 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using ABB.Robotics.Math;
 using ABB.Robotics.RobotStudio.Stations;
+using RobotStudio.API.Internal;
 
 namespace RobotStudioUnityBridge;
 
@@ -115,6 +117,7 @@ public static class ExportPipeline
         if (File.Exists(TimelineRecorder.OutputPath))
         {
             File.Copy(TimelineRecorder.OutputPath, Path.Combine(packageDir, "motion_timeline.jsonl"), overwrite: true);
+            ExportLinkTimeline(station, TimelineRecorder.OutputPath, Path.Combine(packageDir, "link_timeline.jsonl"));
             timelineIncluded = true;
         }
         else
@@ -133,10 +136,12 @@ public static class ExportPipeline
             if (timelineIncluded)
             {
                 writer.WriteString("timelineFile", "motion_timeline.jsonl");
+                writer.WriteString("linkTimelineFile", "link_timeline.jsonl");
             }
             else
             {
                 writer.WriteNull("timelineFile");
+                writer.WriteNull("linkTimelineFile");
             }
 
             writer.WriteStartArray("mechanisms");
@@ -155,34 +160,58 @@ public static class ExportPipeline
         Log($"ExportPackage: wrote package to '{packageDir}' (timeline included: {timelineIncluded}).");
     }
 
+    /// <summary>
+    /// For every link (in GraphicComponents order, i.e. link index), resolves which link index is
+    /// its parent per the mechanism's joint tree (-1 for the base link) and which joint index
+    /// drives it (-1 for the base link, which no joint drives directly). Shared by the rest-pose
+    /// geometry export and the per-sample link timeline export -- both need the same parent/joint
+    /// relationship, just applied to a different Transform/Matrix4 snapshot.
+    /// </summary>
+    private static (int[] ParentLinkIndices, int[] JointIndices) GetParentLinkIndices(Mechanism mechanism)
+    {
+        var components = mechanism.GraphicComponents;
+        var linkIndexByComponent = new Dictionary<ABB.Robotics.RobotStudio.Stations.GraphicComponent, int>();
+        for (var i = 0; i < components.Count; i++)
+        {
+            linkIndexByComponent[components[i]] = i;
+        }
+
+        var parentLinkIndices = new int[components.Count];
+        var jointIndices = new int[components.Count];
+        for (var i = 0; i < components.Count; i++)
+        {
+            parentLinkIndices[i] = -1;
+            jointIndices[i] = -1;
+            if (mechanism.GetParentJoint(components[i], out var jointIndex))
+            {
+                jointIndices[i] = jointIndex;
+                if (mechanism.GetParentLink(jointIndex, out var parentLinkComponent)
+                    && linkIndexByComponent.TryGetValue(parentLinkComponent, out var resolvedIndex))
+                {
+                    parentLinkIndices[i] = resolvedIndex;
+                }
+            }
+        }
+
+        return (parentLinkIndices, jointIndices);
+    }
+
     private static void ExportMechanismGeometry(Mechanism mechanism, string dir)
     {
         Directory.CreateDirectory(dir);
 
-        // Index every link up front so parent-link references below can resolve to a plain int
-        // index instead of forcing the Unity side to re-derive it (and so branching mechanisms --
-        // e.g. a gripper with more than one finger -- aren't silently assumed to be a simple
-        // serial chain, which "parent = index - 1" would get wrong).
-        var linkIndexByComponent = new Dictionary<ABB.Robotics.RobotStudio.Stations.GraphicComponent, int>();
-        var linkIndex = 0;
-        foreach (var link in mechanism.GraphicComponents)
-        {
-            linkIndexByComponent[link] = linkIndex++;
-        }
+        var components = mechanism.GraphicComponents;
+        var (parentLinkIndices, jointIndices) = GetParentLinkIndices(mechanism);
 
         var linkEntries = new List<LinkEntry>();
-        linkIndex = 0;
+        var linkIndex = 0;
 
-        foreach (var link in mechanism.GraphicComponents)
+        foreach (var link in components)
         {
-            var hasParentJoint = mechanism.GetParentJoint(link, out var jointIndex);
-            var parentLinkIndex = -1;
-            ABB.Robotics.RobotStudio.Stations.GraphicComponent? parentLinkComponent = null;
-            if (hasParentJoint && mechanism.GetParentLink(jointIndex, out parentLinkComponent)
-                && linkIndexByComponent.TryGetValue(parentLinkComponent, out var resolvedIndex))
-            {
-                parentLinkIndex = resolvedIndex;
-            }
+            var jointIndex = jointIndices[linkIndex];
+            var hasParentJoint = jointIndex >= 0;
+            var parentLinkIndex = parentLinkIndices[linkIndex];
+            var parentLinkComponent = parentLinkIndex >= 0 ? components[parentLinkIndex] : null;
 
             // Relative to the parent link (or to the mechanism itself for the base link) --
             // NOT baked from whatever pose the joints happen to be in right now. Link.Mesh
@@ -264,6 +293,144 @@ public static class ExportPipeline
         }
 
         Log($"ExportGeometry: exported {linkIndex} link(s) for mechanism '{mechanism.DisplayName}' to '{dir}'.");
+    }
+
+    /// <summary>
+    /// Reads the raw joint-value samples recorded by TimelineRecorder and, for each one, resolves
+    /// every link's Unity-space local position/rotation via Mechanism.GetJointTransform -- exact
+    /// forward kinematics from RobotStudio itself, not a re-implementation -- so the Unity side
+    /// only has to interpolate between keyframes, the same way it already applies manifest.json's
+    /// rest-pose localPosition/localRotation. GetJointTransform doesn't mutate the live station (it
+    /// takes jointValues as a parameter), so this is safe to run after recording without disturbing
+    /// whatever pose the station is currently showing.
+    /// </summary>
+    private static void ExportLinkTimeline(Station station, string rawTimelinePath, string outPath)
+    {
+        var mechanismsByName = station.GraphicComponents.OfType<Mechanism>()
+            .ToDictionary(m => m.DisplayName);
+        var linkInfoByMechanism = new Dictionary<string, (int[] ParentLinkIndices, int[] JointIndices)>();
+
+        using var outWriter = new StreamWriter(outPath, append: false, Encoding.UTF8);
+        using var lineBuffer = new MemoryStream();
+        var writer = new Utf8JsonWriter(lineBuffer);
+        var inv = CultureInfo.InvariantCulture;
+
+        foreach (var line in File.ReadLines(rawTimelinePath))
+        {
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (root.GetProperty("type").GetString() != "joint")
+            {
+                continue;
+            }
+
+            var mechanismName = root.GetProperty("mechanism").GetString();
+            if (mechanismName is null || !mechanismsByName.TryGetValue(mechanismName, out var mechanism))
+            {
+                continue;
+            }
+
+            var jointValues = root.GetProperty("values").EnumerateArray().Select(v => v.GetDouble()).ToArray();
+
+            if (!linkInfoByMechanism.TryGetValue(mechanismName, out var linkInfo))
+            {
+                linkInfo = GetParentLinkIndices(mechanism);
+                linkInfoByMechanism[mechanismName] = linkInfo;
+            }
+            var (parentLinkIndices, jointIndices) = linkInfo;
+
+            var components = mechanism.GraphicComponents;
+            var linkMatrices = new Matrix4[components.Count];
+            var allResolved = true;
+            for (var i = 0; i < components.Count; i++)
+            {
+                // GetJointTransform takes a *joint* index, not a link index -- the base link
+                // (jointIndices[i] == -1, nothing drives it directly) keeps its fixed rest-pose
+                // matrix instead, since it never moves as other joints are driven.
+                if (jointIndices[i] < 0)
+                {
+                    linkMatrices[i] = components[i].Transform.Matrix;
+                }
+                else if (!mechanism.GetJointTransform(jointIndices[i], jointValues, out var rawMatrix))
+                {
+                    allResolved = false;
+                    break;
+                }
+                else
+                {
+                    // GetJointTransform returns the solver's raw output, not the final placement --
+                    // RobotStudio itself multiplies by the link's CorrectionTransform before storing
+                    // it as Transform.Matrix (see IMechanismLink.SetLinkTransform, found by
+                    // decompiling: "_transformMat = mat * _correctionTransform"). Skipping this was
+                    // the original bug: links looked plausible individually but didn't line up with
+                    // each other, since only the base link (read straight from Transform.Matrix)
+                    // had the correction baked in and the rest didn't.
+                    var correction = ((IMechanismLink)components[i]).CorrectionTransform;
+                    linkMatrices[i] = rawMatrix.Multiply(correction);
+                }
+            }
+
+            if (!allResolved)
+            {
+                Log($"ExportLinkTimeline: failed to resolve link transforms for mechanism '{mechanismName}' at t={root.GetProperty("t").GetRawText()}, skipping sample.");
+                continue;
+            }
+
+            lineBuffer.SetLength(0);
+            writer.Reset(lineBuffer);
+            writer.WriteStartObject();
+            writer.WriteString("type", "link");
+            writer.WritePropertyName("t");
+            writer.WriteRawValue(root.GetProperty("t").GetRawText(), skipInputValidation: true);
+            writer.WriteString("mechanism", mechanismName);
+            writer.WriteStartArray("links");
+            for (var i = 0; i < components.Count; i++)
+            {
+                var relativeMatrix = parentLinkIndices[i] >= 0
+                    ? RelativeTransform(linkMatrices[i], linkMatrices[parentLinkIndices[i]])
+                    : linkMatrices[i];
+                var (px, py, pz, qx, qy, qz, qw) = ConvertTransformToUnity(relativeMatrix);
+
+                writer.WriteStartObject();
+                writer.WriteNumber("index", i);
+                writer.WriteStartArray("localPosition");
+                writer.WriteRawValue(px.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(py.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(pz.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteEndArray();
+                writer.WriteStartArray("localRotation");
+                writer.WriteRawValue(qx.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(qy.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(qz.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(qw.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+            writer.Flush();
+            outWriter.WriteLine(Encoding.UTF8.GetString(lineBuffer.GetBuffer(), 0, (int)lineBuffer.Length));
+        }
+
+        Log($"ExportLinkTimeline: wrote '{outPath}'.");
+    }
+
+    /// <summary>
+    /// child's transform relative to parent, both already in the same space (mechanism-local
+    /// Matrix, not GlobalMatrix) -- same formula Transform.GetRelativeTransform uses internally
+    /// (Inverse(parent) * child), reimplemented here because GetJointTransform returns raw Matrix4
+    /// values with no Transform object to call GetRelativeTransform on.
+    /// </summary>
+    private static Matrix4 RelativeTransform(Matrix4 child, Matrix4 parent)
+    {
+        var parentInverse = parent;
+        parentInverse.InvertRigid();
+        return parentInverse.Multiply(child);
     }
 
     /// <summary>
