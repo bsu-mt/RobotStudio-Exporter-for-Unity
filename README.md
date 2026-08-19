@@ -32,10 +32,15 @@ Nothing below is decided yet — these are the questions the next session should
 `ExportPipeline.ExportPackage()` bundles a folder per export (`%TEMP%\RobotStudioUnityBridge\export\<timestamp>\`):
 
 ```
-package.json              schemaVersion, exportedAt, station name, timelineIncluded, per-mechanism list
-motion_timeline.jsonl     copy of whatever TimelineRecorder captured (absent if nothing was recorded first)
+package.json              schemaVersion, exportedAt, station name, timelineIncluded, timelineFile,
+                           linkTimelineFile, per-mechanism list
+motion_timeline.jsonl     raw joint values + I/O signal changes as TimelineRecorder captured them
+                           (absent if nothing was recorded first) -- kept for debugging/future use
+link_timeline.jsonl       motion_timeline.jsonl resampled to per-link Unity-space local
+                           position/rotation keyframes (see "Timeline coordinate convention"
+                           below) -- this is what the Unity importer actually plays back
 geometry/<mechanism>/
-  manifest.json           per-link index/name/parentJoint/files (see "Status")
+  manifest.json           per-link index/name/parentJoint/parentLink/localPosition/localRotation/files
   link0_*.obj/.mtl, ...
 ```
 
@@ -43,7 +48,15 @@ Still open:
 
 - Is a loose folder the right final shape, or should this be zipped (like the `.rspak` packaging) for a cleaner one-file hand-off?
 - Sampling rate/density needed for the joint timeline (currently event-driven — one line per `AnyJointValuesChanged` firing, which in practice is dense during a jog/simulation; a denser timeline will eventually come from a MoveIt integration upstream — the schema should accommodate that without rework)
-- RobotStudio's exact coordinate/axis convention (WorkObject orientation) for a station, so the Unity-side coordinate transform is derived precisely rather than guessed by trial and error — geometry itself is already confirmed Y-up (see "Status"), this is about the *timeline*'s joint-to-world transforms
+
+### Timeline coordinate convention — resolved
+
+`ExportPipeline.ExportLinkTimeline()` resamples the raw recorded joint values into per-link Unity-space transforms using RobotStudio's own forward kinematics (`Mechanism.GetJointTransform(jointIndex, jointValues, out Matrix4)`), not a reimplementation. Two things had to be reverse-engineered by decompiling `ABB.Robotics.RobotStudio.Stations.dll`:
+
+- `GetJointTransform` takes a **joint** index, not a link index (`0..NumTotalJoints-1`). The base link has no driving joint (`GetParentJoint` returns false for it), so it keeps its static rest-pose transform (`Transform.Matrix`) instead — it never moves as other joints are driven.
+- `GetJointTransform`'s return value is the FK solver's raw output, *not* the final placement — RobotStudio itself multiplies by the link's `CorrectionTransform` (`RobotStudio.API.Internal.IMechanismLink.CorrectionTransform`) before it becomes `Transform.Matrix`. Skipping this the first time caused the rig to visually fall apart during playback in Unity, since only the base link (read straight from `Transform.Matrix`) had the correction baked in.
+
+Once resolved to a link's transform relative to its mechanism, the same axis remap used for geometry/rest-pose (`(x, y, z) -> (x, z, -y)`, `ConvertTransformToUnity`) converts it to Unity's convention. So the coordinate convention is the same for rest pose and for every timeline keyframe — no separate WorkObject-orientation lookup needed.
 
 ### 2. Geometry conversion mechanics — resolved, no longer an open question
 
@@ -93,7 +106,7 @@ Also worth knowing: `AddinMain()` runs exactly once, when the add-in loads (whic
 
 ## Status
 
-Add-in loads and runs inside a real RobotStudio 2026 instance, with a "Unity Bridge" ribbon tab exposing three working actions: **Record Motion + I/O** (joint + I/O signal timeline, JSON-lines, toggle), **Export Geometry** (per-link OBJ+MTL + hierarchy manifest.json, standalone/for quick iteration), and **Export Package** (bundles a fresh geometry export with whatever's currently recorded into one timestamped folder under `%TEMP%\RobotStudioUnityBridge\export\`, plus a top-level `package.json` — see "Open Design Decisions" #1 for the exact layout). All three verified against the demo IRB4600 station. Still missing before this is a real hand-off-able deliverable: deciding whether the package should be zipped, and anything on the Unity-importer side.
+Add-in loads and runs inside a real RobotStudio 2026 instance, with a "Unity Bridge" ribbon tab exposing three working actions: **Record Motion + I/O** (joint + I/O signal timeline, JSON-lines, toggle), **Export Geometry** (per-link OBJ+MTL + hierarchy manifest.json, standalone/for quick iteration), and **Export Package** (bundles a fresh geometry export, the raw recorded timeline, and a resolved per-link `link_timeline.jsonl` into one timestamped folder under `%TEMP%\RobotStudioUnityBridge\export\` or next to the station file, plus a top-level `package.json` — see "Open Design Decisions" #1 for the exact layout). All three verified against the demo IRB4600 station — including full playback on the Unity side (see `Unity-Importer-from-RobotStudio`'s `TimelineController`), links staying correctly connected through the whole recorded motion. Still missing before this is a real hand-off-able deliverable: deciding whether the package should be zipped.
 
 Reminder for whoever repackages: RobotStudio's Add-Ins → Install refuses to reinstall an unchanged `<Version>` in the `.csproj` — bump it every time before `pack.ps1`.
 
@@ -107,6 +120,8 @@ src/RobotStudioUnityBridge/
   RobotStudioUnityBridge.rsaddin  add-in manifest (AddInType=General, copied next to the built .dll)
   Addin.cs                        RobotStudio-facing entrypoint (Addin.AddinMain()), registers the ribbon tab/buttons
   ExportPipeline.cs               LogActiveStationSummary() (prototype), ExportGeometry() (per-link OBJ+MTL),
-                                   ExportPackage() (bundles geometry + recorded timeline into one folder)
+                                   ExportLinkTimeline() (resamples recorded joint values to per-link Unity
+                                   transforms via RobotStudio's own forward kinematics), ExportPackage()
+                                   (bundles geometry + recorded timeline + link timeline into one folder)
   TimelineRecorder.cs             joint + I/O signal timeline recording (Start()/Stop())
 ```
