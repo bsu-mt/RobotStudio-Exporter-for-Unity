@@ -206,7 +206,13 @@ public static class ExportPipeline
         var linkEntries = new List<LinkEntry>();
         var linkIndex = 0;
 
-        foreach (var link in components)
+        // Cast to IEnumerable<GraphicComponent> explicitly: RobotStudio 2025's
+        // GraphicComponentCollection declares a public non-generic GetEnumerator() directly
+        // (foreach binds to that over the interface's, per the C# spec), while 2026's only
+        // implements IEnumerable<GraphicComponent>.GetEnumerator() explicitly -- this cast
+        // gives `object` vs. `GraphicComponent` foreach elements depending on host version
+        // unless forced. Both SDKs implement the generic interface, so this works on either.
+        foreach (var link in (IEnumerable<ABB.Robotics.RobotStudio.Stations.GraphicComponent>)components)
         {
             var jointIndex = jointIndices[linkIndex];
             var hasParentJoint = jointIndex >= 0;

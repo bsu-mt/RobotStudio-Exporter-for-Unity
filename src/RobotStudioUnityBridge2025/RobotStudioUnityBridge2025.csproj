@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- RobotStudio 2025 hosts add-ins via RsAddinHost.exe, which is .NET Framework 4.8
+         (Bin\RsAddinHost.exe.config: supportedRuntime v4.0, sku .NETFramework,Version=v4.8),
+         unlike 2026's net10.0-windows host. Same add-in source, different host runtime, hence a
+         separate project instead of a second TargetFramework on the 2026 csproj (WinForms/WPF
+         + SDK HintPaths would otherwise need to conditionally switch per-TFM anyway). -->
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>RobotStudioUnityBridge</RootNamespace>
+    <AssemblyName>RobotStudioUnityBridge</AssemblyName>
+    <RobotStudioBin>C:\Program Files (x86)\ABB\RobotStudio 2025\Bin</RobotStudioBin>
+    <!-- Kept in lockstep with RobotStudioUnityBridge.csproj's <Version> (2026 project):
+         same source, same release, just a different host build. -->
+    <Version>0.1.15</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- net48 has neither System.Text.Json nor the `record`/init-only-setter support types
+         (IsExternalInit) that ExportPipeline.cs/TimelineRecorder.cs use: both ship out of the
+         box on net10.0-windows (2026 project) but need to be added by hand here. -->
+    <PackageReference Include="System.Text.Json" Version="9.0.0" />
+    <PackageReference Include="IsExternalInit" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Same four SDK references as the 2026 project, pointed at 2025's Bin instead. The API
+         surface used here (Mechanism.GetJointTransform, IMechanismLink.CorrectionTransform,
+         Transform.GetRelativeTransform, Part.SaveAs, etc.) was confirmed identical by decompiling
+         both versions' ABB.Robotics.RobotStudio.Stations.dll before creating this project. -->
+    <Reference Include="ABB.Robotics.RobotStudio">
+      <HintPath>$(RobotStudioBin)\ABB.Robotics.RobotStudio.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ABB.Robotics.RobotStudio.Stations">
+      <HintPath>$(RobotStudioBin)\ABB.Robotics.RobotStudio.Stations.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ABB.Robotics.RobotStudio.Environment">
+      <HintPath>$(RobotStudioBin)\ABB.Robotics.RobotStudio.Environment.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ABB.Robotics.Math">
+      <HintPath>$(RobotStudioBin)\ABB.Robotics.Math.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Same source as the 2026 project (RobotStudioUnityBridge/*.cs), linked, not copied, so
+         a fix in one host build can't silently drift from the other. -->
+    <Compile Include="..\RobotStudioUnityBridge\Addin.cs" Link="Addin.cs" />
+    <Compile Include="..\RobotStudioUnityBridge\ExportPipeline.cs" Link="ExportPipeline.cs" />
+    <Compile Include="..\RobotStudioUnityBridge\TimelineRecorder.cs" Link="TimelineRecorder.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="RobotStudioUnityBridge.rsaddin">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

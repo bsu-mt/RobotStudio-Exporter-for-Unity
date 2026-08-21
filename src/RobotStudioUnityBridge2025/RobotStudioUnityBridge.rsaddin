@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<RobotStudioAddIn xmlns="urn:abb-robotics-robotstudio-addin" autoLoad="true">
+  <DisplayName>RobotStudio Unity Bridge</DisplayName>
+  <Description>Exports a robot arm assembly simulation (per-link geometry, joint motion timeline, I/O signal timeline) for playback in Unity.</Description>
+  <ApplicationId>com.bsu-mt.robotstudiounitybridge</ApplicationId>
+  <AddInType>General</AddInType>
+  <Platform>Any</Platform>
+  <Dependencies>Station</Dependencies>
+  <MinimumHostVersion>25.1</MinimumHostVersion>
+  <Assembly>
+    <FileName>RobotStudioUnityBridge.dll</FileName>
+  </Assembly>
+</RobotStudioAddIn>
