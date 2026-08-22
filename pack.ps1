@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    Builds RobotStudioUnityBridge (2026 and 2025 host targets) and packages each as a .rspak
-    that RobotStudio's Add-Ins > Install can consume.
+    Builds RobotStudioUnityBridge (2025 and/or 2026 host targets) and packages each as a
+    .rspak that RobotStudio's Add-Ins > Install can consume.
 
 .DESCRIPTION
     RobotStudio's Install dialog only accepts .rspak (or .rmf), not a bare .rsaddin -- see
@@ -13,12 +13,24 @@
     Two host builds exist because RobotStudio 2025 and 2026 load add-ins via incompatible
     runtimes (net48 vs. net10.0-windows) -- see src/RobotStudioUnityBridge2025's comments.
     Same source (linked, not copied), different <MinimumHostVersion>/<MinClientVersion>, so
-    each build only installs into the RobotStudio version it actually targets.
+    each build only installs into the RobotStudio version it actually targets. **2025 is the
+    actively developed/tested target** (see README "Two host builds"); 2026 is archived --
+    only build it on a machine with RobotStudio 2026's SDK actually installed.
+
+.PARAMETER Target
+    Which host build(s) to build and package. Defaults to "2025" -- the active target -- since
+    most dev machines won't have both RobotStudio 2025 and 2026 installed. Pass "2026" or "All"
+    explicitly when you have that SDK available.
 
 .OUTPUTS
-    dist/RobotStudioUnityBridge-<version>.rspak       (RobotStudio 2026)
-    dist/RobotStudioUnityBridge2025-<version>.rspak   (RobotStudio 2025)
+    dist/RobotStudioUnityBridge2025-<version>.rspak   (RobotStudio 2025, active target)
+    dist/RobotStudioUnityBridge-<version>.rspak       (RobotStudio 2026, archived target)
 #>
+
+param(
+    [ValidateSet("2025", "2026", "All")]
+    [string]$Target = "2025"
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -54,7 +66,14 @@ function Build-AddinPackage {
     if (Test-Path $stageRoot) { Remove-Item $stageRoot -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $addInDir | Out-Null
 
-    Copy-Item (Join-Path $buildOut "RobotStudioUnityBridge.dll") $addInDir
+    # Copy every .dll next to the add-in, not just RobotStudioUnityBridge.dll itself -- the
+    # net48 build (RobotStudioUnityBridge2025) pulls in several dependency assemblies
+    # (System.Text.Json, System.Memory, etc.) that net10.0-windows ships built-in, so they
+    # only exist as separate files in that build's output. Missing one of these fails the
+    # add-in to load silently -- no ribbon, no error dialog, easy to miss (see git history:
+    # RobotStudioUnityBridge2025 first shipped with just the two named files and the ribbon
+    # never appeared in RobotStudio 2025).
+    Copy-Item (Join-Path $buildOut "*.dll") $addInDir
     Copy-Item (Join-Path $buildOut "RobotStudioUnityBridge.rsaddin") $addInDir
 
     @"
@@ -80,8 +99,12 @@ function Build-AddinPackage {
     Write-Host "Wrote $rspakPath"
 }
 
-Build-AddinPackage -ProjectName "RobotStudioUnityBridge" -BuildOutSubdir "bin\Debug\net10.0-windows" `
-    -MinClientVersion "26.1" -PkgPrefix "RobotStudioUnityBridge"
+if ($Target -eq "2025" -or $Target -eq "All") {
+    Build-AddinPackage -ProjectName "RobotStudioUnityBridge2025" -BuildOutSubdir "bin\Debug\net48" `
+        -MinClientVersion "25.1" -PkgPrefix "RobotStudioUnityBridge2025"
+}
 
-Build-AddinPackage -ProjectName "RobotStudioUnityBridge2025" -BuildOutSubdir "bin\Debug\net48" `
-    -MinClientVersion "25.1" -PkgPrefix "RobotStudioUnityBridge2025"
+if ($Target -eq "2026" -or $Target -eq "All") {
+    Build-AddinPackage -ProjectName "RobotStudioUnityBridge" -BuildOutSubdir "bin\Debug\net10.0-windows" `
+        -MinClientVersion "26.1" -PkgPrefix "RobotStudioUnityBridge"
+}

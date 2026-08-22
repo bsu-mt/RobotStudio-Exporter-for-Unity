@@ -79,7 +79,7 @@ No FreeCAD/STEP conversion needed. RobotStudio ships its own OBJ+MTL exporter (`
 
 ## Local Environment
 
-- **RobotStudio 2026** is installed at `C:\Program Files (x86)\ABB\RobotStudio 2026`.
+- **RobotStudio 2025** is installed at `C:\Program Files (x86)\ABB\RobotStudio 2025` on the current dev machine — this is the actively developed/tested target (see "Two host builds" below). RobotStudio 2026 is not installed here; the notes below about `RobotStudio 2026` were captured on an earlier machine that had it and are kept for reference, not as the current setup.
 - **`Bin` vs `Bin-net48` — resolved.** `Bin\RobotStudio.exe` ships a `RobotStudio.runtimeconfig.json` targeting `net10.0` / `Microsoft.WindowsDesktop.App` — RobotStudio 2026's main process is a modern .NET (not .NET Framework) desktop app. `Bin-net48\RsAddinHost.exe` is a separate net48 host process, used only for legacy `AddInType=Internal` add-ins (e.g. the built-in `IOConfigurator`, `FleetManagement` — both ABB-internal, declared with an explicit `<Entrypoint>` in their `.rsaddin`). Real, general-purpose add-ins (e.g. the built-in `UsdConverter`, `AddInType=General`) live directly under `Bin\Addins\` and load in-process into the `net10.0` host. **This project targets `net10.0-windows` and references the `Bin\` assemblies** — confirmed working, `dotnet build` succeeds against them (see `src/RobotStudioUnityBridge/RobotStudioUnityBridge.csproj`).
 - **Add-in manifest format and entrypoint convention — resolved by decompiling `UsdConverter` and `IOConfigurator`** (both shipped in `Bin\Addins\`): a `.rsaddin` XML file sits next to the assembly, declaring `AddInType` (`General` for a normal in-process add-in), `Assembly/FileName`, and optionally `Entrypoint`. When `Entrypoint` is omitted (as in `UsdConverter.rsaddin`), RobotStudio finds the entrypoint by convention: a type named `Addin` with a method `AddinMain()` — confirmed by reflecting over `UsdConverter.dll`, which has exactly `UsdConverter.Addin.AddinMain()` as a static method. This project's manifest (`RobotStudioUnityBridge.rsaddin`) and entrypoint (`Addin.cs`) follow that same convention.
 - **Station object model, enough for the prototype and beyond:** `ABB.Robotics.RobotStudio.Stations.Station.ActiveStation` (static) → `.GraphicComponents` (`IEnumerable<GraphicComponent>`, `Mechanism : GraphicComponent`) → per-`Mechanism` `GetJointValues()`, `NumActiveJoints`, `GetJointTypes()`, `GetJointLimits()`, `GetParentLink()`, `GetJointTransform()`. Also found directly on `Station`: `.IOSignals` (`IOSignalCollection`) plus `IOSignalChanged`/`IOSignalValueChanged` events — meaning the I/O signal timeline can likely be captured straight from the `Station`, without going through a separate virtual-controller connection (`ABB.Robotics.Controllers.PC.dll`'s `IOSystemDomain.Signal`, which also exists but looks like the wrong layer for this). Have **not** yet found a `SimulationController` type under that exact name — worth another reflection pass (or real docs) once simulation recording is being built.
@@ -91,11 +91,13 @@ No FreeCAD/STEP conversion needed. RobotStudio ships its own OBJ+MTL exporter (`
 
 ## Testing the Add-in
 
-There's no "Add-in path" option in RobotStudio 2026's UI (an earlier guess in this doc was wrong). Installing is done via the **Add-Ins ribbon tab → Install** button, which only accepts `.rspak` (or `.rmf`) files, not a bare `.rsaddin`. Steps:
+There's no "Add-in path" option in RobotStudio's UI (an earlier guess in this doc was wrong, true for both 2025 and 2026). Installing is done via the **Add-Ins ribbon tab → Install** button, which only accepts `.rspak` (or `.rmf`) files, not a bare `.rsaddin`. Steps (RobotStudio 2025, the active target):
 
-1. `.\pack.ps1` from the repo root — builds the add-in and produces `dist/RobotStudioUnityBridge-<version>.rspak`.
-2. In RobotStudio: **Add-Ins tab → Install**, pick that `.rspak`.
+1. `.\pack.ps1` from the repo root — builds the 2025 add-in and produces `dist/RobotStudioUnityBridge2025-<version>.rspak`. (Bump `<Version>` in `src/RobotStudioUnityBridge2025/RobotStudioUnityBridge2025.csproj` first if reinstalling — see the reminder below.)
+2. In RobotStudio 2025: **Add-Ins tab → Install**, pick that `.rspak`.
 3. Restart RobotStudio (autoload happens at startup), then open any station. Check `%TEMP%\RobotStudioUnityBridge.log` for the mechanism/joint-value dump.
+
+For the archived RobotStudio 2026 target, run `.\pack.ps1 -Target 2026` instead (only on a machine with RobotStudio 2026 installed) and install `dist/RobotStudioUnityBridge-<version>.rspak` the same way.
 
 Two real gotchas hit while getting this working (both reverse-engineered by decompiling `RobotStudio.dll`/`ABB.Robotics.RobotStudio.dll` with `ilspycmd`, since this is undocumented):
 
@@ -106,42 +108,47 @@ Also worth knowing: `AddinMain()` runs exactly once, when the add-in loads (whic
 
 ## Status
 
-Add-in loads and runs inside a real RobotStudio 2026 instance, with a "Unity Bridge" ribbon tab exposing three working actions: **Record Motion + I/O** (joint + I/O signal timeline, JSON-lines, toggle), **Export Geometry** (per-link OBJ+MTL + hierarchy manifest.json, standalone/for quick iteration), and **Export Package** (bundles a fresh geometry export, the raw recorded timeline, and a resolved per-link `link_timeline.jsonl` into one timestamped folder under `%TEMP%\RobotStudioUnityBridge\export\` or next to the station file, plus a top-level `package.json` — see "Open Design Decisions" #1 for the exact layout). All three verified against the demo IRB4600 station — including full playback on the Unity side (see `Unity-Importer-from-RobotStudio`'s `TimelineController`), links staying correctly connected through the whole recorded motion. Still missing before this is a real hand-off-able deliverable: deciding whether the package should be zipped.
+Add-in loads and runs inside real RobotStudio instances (originally verified on 2026; now actively developed and tested on **RobotStudio 2025**, the current dev machine's install — see "Two host builds" below), with a "Unity Bridge" ribbon tab exposing three working actions: **Record Motion + I/O** (joint + I/O signal timeline, JSON-lines, toggle — as of the current session, also polls and records transform changes on non-mechanism "static" components, e.g. a picked-up part, since RobotStudio has no attach/re-parent event to hook directly), **Export Geometry** (per-link OBJ+MTL + hierarchy manifest.json, standalone/for quick iteration), and **Export Package** (bundles a fresh geometry export, the raw recorded timeline, and a resolved per-link `link_timeline.jsonl` into one timestamped folder under `%TEMP%\RobotStudioUnityBridge\export\` or next to the station file, plus a top-level `package.json` — see "Open Design Decisions" #1 for the exact layout). All three verified against the demo IRB4600 station — including full playback on the Unity side (see `Unity-Importer-from-RobotStudio`'s `TimelineController`), links staying correctly connected through the whole recorded motion. Still missing before this is a real hand-off-able deliverable: deciding whether the package should be zipped; end-to-end verification that a picked-up static component's motion round-trips correctly through a real RobotStudio 2025 recording + export + Unity playback.
 
-Reminder for whoever repackages: RobotStudio's Add-Ins → Install refuses to reinstall an unchanged `<Version>` in the `.csproj` — bump it every time before `pack.ps1`.
+Reminder for whoever repackages: RobotStudio's Add-Ins → Install refuses to reinstall an unchanged `<Version>` in the `.csproj` — bump it every time before `pack.ps1`. Both `.csproj`s (`RobotStudioUnityBridge` and `RobotStudioUnityBridge2025`) are kept in lockstep, so bump both even though only one gets built/packaged day-to-day.
 
-## Two host builds: RobotStudio 2025 and 2026
+## Two host builds: RobotStudio 2025 (active) and 2026 (archived)
 
 RobotStudio 2025 and 2026 load add-ins through incompatible runtimes — 2026's `RobotStudio.exe`/`RsAddinHost.exe` are `net10.0-windows`, while 2025's are classic **.NET Framework 4.8** (`Bin\RsAddinHost.exe.config`: `supportedRuntime v4.0, sku .NETFramework,Version=v4.8`). A `.rsaddin`'s `MinimumHostVersion` gate means a 2026-targeted build silently fails to load on 2025 — no error, the button just never appears (this is what happened when a colleague tried installing the `26.1`-gated build on their RobotStudio 2025).
 
-So there are now two projects building the same source:
+So there are two projects building the same source, but **they are not developed with equal priority**:
 
-- `src/RobotStudioUnityBridge/` — `net10.0-windows`, targets RobotStudio 2026, `MinimumHostVersion 26.1`.
-- `src/RobotStudioUnityBridge2025/` — `net48`, targets RobotStudio 2025, `MinimumHostVersion 25.1`. Has its own `.csproj`/`.rsaddin` but **links** (not copies) `Addin.cs`/`ExportPipeline.cs`/`TimelineRecorder.cs` from the 2026 project, so a fix only has to be made once.
+- `src/RobotStudioUnityBridge2025/` — **active target.** `net48`, targets RobotStudio 2025, `MinimumHostVersion 25.1`. This is the RobotStudio version actually installed on the current dev machine, so this is what gets built, packaged, and tested going forward. Has its own `.csproj`/`.rsaddin` but **links** (not copies) `Addin.cs`/`ExportPipeline.cs`/`TimelineRecorder.cs` from `src/RobotStudioUnityBridge/`, so a fix only has to be made once and both targets stay in sync automatically.
+- `src/RobotStudioUnityBridge/` — **archived.** `net10.0-windows`, targets RobotStudio 2026, `MinimumHostVersion 26.1`. Not being actively built or tested right now (no RobotStudio 2026 install on the current dev machine) — it still holds the shared source files the 2025 project links, so it isn't dead code, but don't assume it currently builds or has been verified against a recent change until someone with RobotStudio 2026 installed checks it. Pick this back up if/when development moves to a 2026 machine, or before shipping to a user on 2026.
 
 Confirmed by decompiling both versions' `ABB.Robotics.RobotStudio.Stations.dll` that the API surface this add-in uses (`Mechanism.GetJointTransform`, `IMechanismLink.CorrectionTransform`, `Transform.GetRelativeTransform`, `Part.SaveAs`, etc.) is identical — so no source logic differs between the two builds. Two real net48 gaps did need addressing in `RobotStudioUnityBridge2025.csproj` (not in the shared source):
 
 - **No `System.Text.Json` or `record`/init-only-setter support out of the box** on net48 (both ship for free on net10.0-windows) — added via `PackageReference`s (`System.Text.Json`, `IsExternalInit`).
 - **`GraphicComponentCollection`'s `foreach` element type differs by host version.** 2025's `GraphicComponentCollection` declares a public non-generic `GetEnumerator()` directly (for old-style `ICollection` compliance); 2026's only implements `IEnumerable<GraphicComponent>.GetEnumerator()` explicitly. C#'s `foreach` binds to a directly-declared `GetEnumerator()` over an interface's, so the same `foreach (var link in components)` resolves to `object` on 2025 and `GraphicComponent` on 2026. Fixed in `ExportPipeline.cs` by casting to `(IEnumerable<GraphicComponent>)components` explicitly, which both SDKs implement.
 
-`pack.ps1` builds and packages both targets in one run, producing `dist/RobotStudioUnityBridge-<version>.rspak` (2026) and `dist/RobotStudioUnityBridge2025-<version>.rspak` (2025). The Unity importer side needs **no changes** — it only ever consumes the exported package folder format, which is identical regardless of which RobotStudio version produced it.
+`pack.ps1 -Target 2025` (the default — just run `.\pack.ps1`) builds and packages only the active target, producing `dist/RobotStudioUnityBridge2025-<version>.rspak`. Pass `-Target 2026` or `-Target All` to also build the archived target — only do this on a machine with RobotStudio 2026's SDK actually installed, since that build needs `ABB.Robotics.*.dll` from a real 2026 install and cannot be verified otherwise. The Unity importer side needs **no changes** regardless — it only ever consumes the exported package folder format, which is identical regardless of which RobotStudio version produced it.
 
 ## Project Layout
 
 ```
-pack.ps1                              builds + packages both add-in targets into dist/*.rspak
-src/RobotStudioUnityBridge/            RobotStudio 2026 target (net10.0-windows)
+pack.ps1                              builds + packages add-in target(s) into dist/*.rspak
+                                       (-Target 2025 default/active, 2026, or All -- see "Two host builds")
+src/RobotStudioUnityBridge2025/        RobotStudio 2025 target (net48) -- ACTIVE, see "Two host builds" above
+  RobotStudioUnityBridge2025.csproj   references RobotStudio 2025's Bin\; links the .cs files below instead
+                                       of copying them; <Version> kept in lockstep with the 2026 csproj
+  RobotStudioUnityBridge.rsaddin      add-in manifest (AddInType=General, MinimumHostVersion 25.1)
+src/RobotStudioUnityBridge/            RobotStudio 2026 target (net10.0-windows) -- ARCHIVED, see "Two host builds" above.
+                                       Holds the shared source files RobotStudioUnityBridge2025 links; not
+                                       actively built/tested without a RobotStudio 2026 install.
   RobotStudioUnityBridge.csproj       references Bin\ABB.Robotics.RobotStudio*.dll; <Version> here is
                                        pack.ps1's source of truth for the 2026 package version
   RobotStudioUnityBridge.rsaddin      add-in manifest (AddInType=General, MinimumHostVersion 26.1)
   Addin.cs                            RobotStudio-facing entrypoint (Addin.AddinMain()), registers the ribbon tab/buttons
   ExportPipeline.cs                   LogActiveStationSummary() (prototype), ExportGeometry() (per-link OBJ+MTL),
-                                       ExportLinkTimeline() (resamples recorded joint values to per-link Unity
-                                       transforms via RobotStudio's own forward kinematics), ExportPackage()
-                                       (bundles geometry + recorded timeline + link timeline into one folder)
-  TimelineRecorder.cs                 joint + I/O signal timeline recording (Start()/Stop())
-src/RobotStudioUnityBridge2025/        RobotStudio 2025 target (net48) -- see "Two host builds" above
-  RobotStudioUnityBridge2025.csproj   references RobotStudio 2025's Bin\; links the .cs files above instead
-                                       of copying them; <Version> kept in lockstep with the 2026 csproj
-  RobotStudioUnityBridge.rsaddin      same manifest shape, MinimumHostVersion 25.1
+                                       ExportLinkTimeline() (resamples recorded joint values -- and static-component
+                                       transform samples -- to per-link Unity transforms via RobotStudio's own
+                                       forward kinematics), ExportPackage() (bundles geometry + recorded timeline +
+                                       link timeline into one folder)
+  TimelineRecorder.cs                 joint + I/O signal timeline recording (Start()/Stop()), plus polling of
+                                       tracked static (non-mechanism) components' transforms on each joint tick
 ```

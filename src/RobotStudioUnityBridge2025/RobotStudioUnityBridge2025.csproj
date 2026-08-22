@@ -17,7 +17,7 @@
     <RobotStudioBin>C:\Program Files (x86)\ABB\RobotStudio 2025\Bin</RobotStudioBin>
     <!-- Kept in lockstep with RobotStudioUnityBridge.csproj's <Version> (2026 project):
          same source, same release, just a different host build. -->
-    <Version>0.1.15</Version>
+    <Version>0.1.18</Version>
   </PropertyGroup>
 
   <ItemGroup>

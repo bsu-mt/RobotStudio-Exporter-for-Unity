@@ -58,11 +58,77 @@ public static class ExportPipeline
             return;
         }
 
-        foreach (var mechanism in station.GraphicComponents.OfType<Mechanism>())
+        var (mechanisms, staticComponents) = FindExportableComponents(station);
+
+        foreach (var mechanism in mechanisms)
         {
             var dir = Path.Combine(GeometryRoot, SanitizeFileName(mechanism.DisplayName));
             ExportMechanismGeometry(mechanism, dir);
         }
+
+        foreach (var component in staticComponents)
+        {
+            var dir = Path.Combine(GeometryRoot, SanitizeFileName(component.DisplayName));
+            ExportStaticComponentGeometry(component, dir);
+        }
+    }
+
+    /// <summary>
+    /// Walks the whole station tree (not just top-level GraphicComponents) looking for every
+    /// Mechanism, at any nesting depth -- needed because a mechanism can sit inside a SmartComponent
+    /// (e.g. Smart_Gripper_Servo_Fingers lives inside SmartComponent_1, not directly on the
+    /// station), so a top-level-only scan silently misses it. Everything else -- every top-level
+    /// station child that isn't itself a Mechanism and doesn't contain one -- is exported as one
+    /// grouped static component (via FindParts, same as before), so a top-level assembly like
+    /// "assembly_table" still yields a single manifest even if it has multiple part children,
+    /// instead of exploding into one manifest per leaf part.
+    /// </summary>
+    private static (List<Mechanism> Mechanisms, List<ABB.Robotics.RobotStudio.Stations.GraphicComponent> StaticComponents) FindExportableComponents(Station station)
+    {
+        var mechanisms = new List<Mechanism>();
+        var staticComponents = new List<ABB.Robotics.RobotStudio.Stations.GraphicComponent>();
+
+        bool CollectMechanisms(ABB.Robotics.RobotStudio.Stations.GraphicComponent component)
+        {
+            if (component is Mechanism mechanism)
+            {
+                mechanisms.Add(mechanism);
+                return true;
+            }
+
+            var containsMechanism = false;
+            foreach (var child in component.ChildInstances)
+            {
+                if (CollectMechanisms(child))
+                {
+                    containsMechanism = true;
+                }
+            }
+
+            return containsMechanism;
+        }
+
+        foreach (var component in (IEnumerable<ABB.Robotics.RobotStudio.Stations.GraphicComponent>)station.GraphicComponents)
+        {
+            if (!CollectMechanisms(component))
+            {
+                staticComponents.Add(component);
+            }
+        }
+
+        return (mechanisms, staticComponents);
+    }
+
+    /// <summary>
+    /// Static (non-mechanism) components of the active station -- e.g. the wooden sticks that get
+    /// picked up by the gripper -- for TimelineRecorder to poll while recording, since their
+    /// motion comes from re-parenting/attachment rather than a joint value change. Null if there's
+    /// no active station.
+    /// </summary>
+    public static List<ABB.Robotics.RobotStudio.Stations.GraphicComponent>? GetStaticComponents()
+    {
+        var station = Station.ActiveStation;
+        return station is null ? null : FindExportableComponents(station).StaticComponents;
     }
 
     /// <summary>
@@ -104,8 +170,10 @@ public static class ExportPipeline
         var geometryDir = Path.Combine(packageDir, "geometry");
         Directory.CreateDirectory(geometryDir);
 
+        var (mechanisms, staticComponents) = FindExportableComponents(station);
+
         var mechanismEntries = new List<(string Name, string GeometryFolder)>();
-        foreach (var mechanism in station.GraphicComponents.OfType<Mechanism>())
+        foreach (var mechanism in mechanisms)
         {
             var name = SanitizeFileName(mechanism.DisplayName);
             var dir = Path.Combine(geometryDir, name);
@@ -113,11 +181,19 @@ public static class ExportPipeline
             mechanismEntries.Add((mechanism.DisplayName, $"geometry/{name}"));
         }
 
+        foreach (var component in staticComponents)
+        {
+            var name = SanitizeFileName(component.DisplayName);
+            var dir = Path.Combine(geometryDir, name);
+            ExportStaticComponentGeometry(component, dir);
+            mechanismEntries.Add((component.DisplayName, $"geometry/{name}"));
+        }
+
         var timelineIncluded = false;
         if (File.Exists(TimelineRecorder.OutputPath))
         {
             File.Copy(TimelineRecorder.OutputPath, Path.Combine(packageDir, "motion_timeline.jsonl"), overwrite: true);
-            ExportLinkTimeline(station, TimelineRecorder.OutputPath, Path.Combine(packageDir, "link_timeline.jsonl"));
+            ExportLinkTimeline(mechanisms, staticComponents, TimelineRecorder.OutputPath, Path.Combine(packageDir, "link_timeline.jsonl"));
             timelineIncluded = true;
         }
         else
@@ -194,6 +270,69 @@ public static class ExportPipeline
         }
 
         return (parentLinkIndices, jointIndices);
+    }
+
+    /// <summary>
+    /// Exports a non-mechanism station component (a fixture, table, or wood stick with no joints)
+    /// as a single-link manifest.json -- same shape ExportMechanismGeometry writes for a one-link
+    /// mechanism, so RobotPackageLoader on the Unity side needs no separate code path. The link's
+    /// local transform is identity since there's no parent link to be relative to; Unity positions
+    /// the whole component via the station's own placement, not per-part offsets here.
+    /// </summary>
+    private static void ExportStaticComponentGeometry(ABB.Robotics.RobotStudio.Stations.GraphicComponent component, string dir)
+    {
+        Directory.CreateDirectory(dir);
+
+        var files = new List<string>();
+        foreach (var part in FindParts(component))
+        {
+            var fileName = $"link0_{SanitizeFileName(part.DisplayName)}.obj";
+            var path = Path.Combine(dir, fileName);
+            try
+            {
+                part.SaveAs(path);
+                files.Add(fileName);
+            }
+            catch (Exception ex)
+            {
+                Log($"ExportGeometry: failed to export part '{part.DisplayName}' of component '{component.DisplayName}': {ex.Message}");
+            }
+        }
+
+        using (var stream = File.Create(Path.Combine(dir, "manifest.json")))
+        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("mechanism", component.DisplayName);
+            writer.WriteStartArray("links");
+            writer.WriteStartObject();
+            writer.WriteNumber("index", 0);
+            writer.WriteString("name", component.DisplayName);
+            writer.WriteNumber("parentJoint", -1);
+            writer.WriteNumber("parentLink", -1);
+            writer.WriteStartArray("localPosition");
+            writer.WriteNumberValue(0.0);
+            writer.WriteNumberValue(0.0);
+            writer.WriteNumberValue(0.0);
+            writer.WriteEndArray();
+            writer.WriteStartArray("localRotation");
+            writer.WriteNumberValue(0.0);
+            writer.WriteNumberValue(0.0);
+            writer.WriteNumberValue(0.0);
+            writer.WriteNumberValue(1.0);
+            writer.WriteEndArray();
+            writer.WriteStartArray("files");
+            foreach (var f in files)
+            {
+                writer.WriteStringValue(f);
+            }
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+
+        Log($"ExportGeometry: exported static component '{component.DisplayName}' to '{dir}'.");
     }
 
     private static void ExportMechanismGeometry(Mechanism mechanism, string dir)
@@ -310,10 +449,13 @@ public static class ExportPipeline
     /// takes jointValues as a parameter), so this is safe to run after recording without disturbing
     /// whatever pose the station is currently showing.
     /// </summary>
-    private static void ExportLinkTimeline(Station station, string rawTimelinePath, string outPath)
+    private static void ExportLinkTimeline(
+        List<Mechanism> mechanisms,
+        List<ABB.Robotics.RobotStudio.Stations.GraphicComponent> staticComponents,
+        string rawTimelinePath, string outPath)
     {
-        var mechanismsByName = station.GraphicComponents.OfType<Mechanism>()
-            .ToDictionary(m => m.DisplayName);
+        var mechanismsByName = mechanisms.ToDictionary(m => m.DisplayName);
+        var staticNames = staticComponents.Select(c => c.DisplayName).ToHashSet();
         var linkInfoByMechanism = new Dictionary<string, (int[] ParentLinkIndices, int[] JointIndices)>();
 
         using var outWriter = new StreamWriter(outPath, append: false, Encoding.UTF8);
@@ -330,7 +472,58 @@ public static class ExportPipeline
 
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
-            if (root.GetProperty("type").GetString() != "joint")
+            var recordType = root.GetProperty("type").GetString();
+
+            if (recordType == "staticTransform")
+            {
+                var componentName = root.GetProperty("component").GetString();
+                if (componentName is null || !staticNames.Contains(componentName))
+                {
+                    continue;
+                }
+
+                var pos = root.GetProperty("position").EnumerateArray().Select(v => v.GetDouble()).ToArray();
+                var rot = root.GetProperty("rotation").EnumerateArray().Select(v => v.GetDouble()).ToArray();
+                // Recorded in RobotStudio space (position xyz / rotation wxyz) -- reconstruct a
+                // Matrix4 via the same Matrix3(rotation) + Vector3(translation) constructor the
+                // joint path already uses (Matrix4(Matrix3, Vector3), proven at line ~644 below),
+                // so this goes through the identical Unity-space conversion (ConvertTransformToUnity)
+                // instead of a second hand-rolled remap. Built from the quaternion via the standard
+                // quaternion-to-rotation-matrix formula, since no Matrix4(Quaternion, Vector3)
+                // overload is confirmed to exist on this SDK type.
+                var rsMatrix = new Matrix4(QuaternionToMatrix3(rot[0], rot[1], rot[2], rot[3]), new Vector3(pos[0], pos[1], pos[2]));
+                var (px, py, pz, qx, qy, qz, qw) = ConvertTransformToUnity(rsMatrix);
+
+                lineBuffer.SetLength(0);
+                writer.Reset(lineBuffer);
+                writer.WriteStartObject();
+                writer.WriteString("type", "link");
+                writer.WritePropertyName("t");
+                writer.WriteRawValue(root.GetProperty("t").GetRawText(), skipInputValidation: true);
+                writer.WriteString("mechanism", componentName);
+                writer.WriteStartArray("links");
+                writer.WriteStartObject();
+                writer.WriteNumber("index", 0);
+                writer.WriteStartArray("localPosition");
+                writer.WriteRawValue(px.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(py.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(pz.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteEndArray();
+                writer.WriteStartArray("localRotation");
+                writer.WriteRawValue(qx.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(qy.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(qz.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteRawValue(qw.ToString("F6", inv), skipInputValidation: true);
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+                writer.Flush();
+                outWriter.WriteLine(Encoding.UTF8.GetString(lineBuffer.GetBuffer(), 0, (int)lineBuffer.Length));
+                continue;
+            }
+
+            if (recordType != "joint")
             {
                 continue;
             }
@@ -465,6 +658,21 @@ public static class ExportPipeline
         var q = new Matrix4(rotationUnity, translationUnity).Quaternion;
         // ABB's Quaternion is scalar-first (q1=w, q2=x, q3=y, q4=z); Unity's is (x, y, z, w).
         return (translationUnity.x, translationUnity.y, translationUnity.z, q.q2, q.q3, q.q4, q.q1);
+    }
+
+    /// <summary>
+    /// Standard scalar-first (w, x, y, z) quaternion-to-rotation-matrix formula, row-major to match
+    /// Matrix3's constructor order (same order ConvertTransformToUnity's own Matrix3 literals use
+    /// above). Needed because TimelineRecorder's polled static-component samples are recorded as a
+    /// quaternion (component.Transform.Matrix.Quaternion), not a Matrix3/Matrix4, and no
+    /// Matrix4(Quaternion, Vector3) overload is confirmed to exist on this SDK type.
+    /// </summary>
+    private static Matrix3 QuaternionToMatrix3(double w, double x, double y, double z)
+    {
+        return new Matrix3(
+            1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
+            2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+            2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y));
     }
 
     /// <summary>

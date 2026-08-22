@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using System.Windows.Forms;
 using ABB.Robotics.RobotStudio;
 using ABB.Robotics.RobotStudio.Environment;
@@ -51,7 +52,7 @@ public static class Addin
                 }
                 else
                 {
-                    TimelineRecorder.Start();
+                    TimelineRecorder.Start(ExportPipeline.GetStaticComponents() ?? Enumerable.Empty<ABB.Robotics.RobotStudio.Stations.GraphicComponent>());
                 }
             })
         {
