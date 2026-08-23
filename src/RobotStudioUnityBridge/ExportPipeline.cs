@@ -171,14 +171,16 @@ public static class ExportPipeline
         Directory.CreateDirectory(geometryDir);
 
         var (mechanisms, staticComponents) = FindExportableComponents(station);
+        var mountsByMechanism = FindMechanismMounts(mechanisms);
 
-        var mechanismEntries = new List<(string Name, string GeometryFolder)>();
+        var mechanismEntries = new List<(string Name, string GeometryFolder, MountInfo? Mount)>();
         foreach (var mechanism in mechanisms)
         {
             var name = SanitizeFileName(mechanism.DisplayName);
             var dir = Path.Combine(geometryDir, name);
             ExportMechanismGeometry(mechanism, dir);
-            mechanismEntries.Add((mechanism.DisplayName, $"geometry/{name}"));
+            mountsByMechanism.TryGetValue(mechanism, out var mount);
+            mechanismEntries.Add((mechanism.DisplayName, $"geometry/{name}", mount));
         }
 
         foreach (var component in staticComponents)
@@ -186,7 +188,7 @@ public static class ExportPipeline
             var name = SanitizeFileName(component.DisplayName);
             var dir = Path.Combine(geometryDir, name);
             ExportStaticComponentGeometry(component, dir);
-            mechanismEntries.Add((component.DisplayName, $"geometry/{name}"));
+            mechanismEntries.Add((component.DisplayName, $"geometry/{name}", null));
         }
 
         var timelineIncluded = false;
@@ -220,12 +222,31 @@ public static class ExportPipeline
                 writer.WriteNull("linkTimelineFile");
             }
 
+            var inv = CultureInfo.InvariantCulture;
             writer.WriteStartArray("mechanisms");
             foreach (var entry in mechanismEntries)
             {
                 writer.WriteStartObject();
                 writer.WriteString("name", entry.Name);
                 writer.WriteString("geometryFolder", entry.GeometryFolder);
+                if (entry.Mount is { } mount)
+                {
+                    writer.WriteStartObject("mountedOn");
+                    writer.WriteString("mechanism", mount.ParentMechanismName);
+                    writer.WriteNumber("linkIndex", mount.ParentLinkIndex);
+                    writer.WriteStartArray("localPosition");
+                    writer.WriteRawValue(mount.Px.ToString("F6", inv), skipInputValidation: true);
+                    writer.WriteRawValue(mount.Py.ToString("F6", inv), skipInputValidation: true);
+                    writer.WriteRawValue(mount.Pz.ToString("F6", inv), skipInputValidation: true);
+                    writer.WriteEndArray();
+                    writer.WriteStartArray("localRotation");
+                    writer.WriteRawValue(mount.Qx.ToString("F6", inv), skipInputValidation: true);
+                    writer.WriteRawValue(mount.Qy.ToString("F6", inv), skipInputValidation: true);
+                    writer.WriteRawValue(mount.Qz.ToString("F6", inv), skipInputValidation: true);
+                    writer.WriteRawValue(mount.Qw.ToString("F6", inv), skipInputValidation: true);
+                    writer.WriteEndArray();
+                    writer.WriteEndObject();
+                }
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
@@ -234,6 +255,69 @@ public static class ExportPipeline
         }
 
         Log($"ExportPackage: wrote package to '{packageDir}' (timeline included: {timelineIncluded}).");
+    }
+
+    private readonly record struct MountInfo(
+        string ParentMechanismName, int ParentLinkIndex,
+        double Px, double Py, double Pz, double Qx, double Qy, double Qz, double Qw);
+
+    /// <summary>
+    /// Detects mechanisms mounted on another mechanism's flange -- e.g. a gripper mounted on the
+    /// robot's tool0 flange, physically moving with the arm even though it's its own top-level
+    /// Mechanism with no joints of its own connecting it to the arm. RobotStudio has no
+    /// attach/re-parent *event* (see TimelineRecorder's static-component polling), but the
+    /// attachment itself is queryable directly: AttachmentHelper.GetAttachedMechanism(mechanism)
+    /// walks the mechanism's flanges and returns whatever Mechanism is attached to the flange's
+    /// link, via the station's real Attachments list (AttachmentHelper.GetAttachedChildren) --
+    /// not a heuristic. GetFlanges() throws for MechanismType.Tool (a gripper has no flange of its
+    /// own to mount things on), so that's skipped rather than caught as an error.
+    /// </summary>
+    private static Dictionary<Mechanism, MountInfo> FindMechanismMounts(List<Mechanism> mechanisms)
+    {
+        var mounts = new Dictionary<Mechanism, MountInfo>();
+
+        foreach (var mechanism in mechanisms)
+        {
+            if (mechanism.MechanismType == MechanismType.Tool)
+            {
+                continue;
+            }
+
+            var flanges = mechanism.GetFlanges();
+            if (flanges.Length == 0)
+            {
+                continue;
+            }
+
+            var attached = AttachmentHelper.GetAttachedMechanism(mechanism);
+            if (attached is null)
+            {
+                continue;
+            }
+
+            var flangeLink = flanges[0].Link;
+            var linkIndex = -1;
+            var components = mechanism.GraphicComponents;
+            for (var i = 0; i < components.Count; i++)
+            {
+                if (ReferenceEquals(components[i], flangeLink))
+                {
+                    linkIndex = i;
+                    break;
+                }
+            }
+
+            if (linkIndex < 0)
+            {
+                continue;
+            }
+
+            var relativeMatrix = attached.Transform.GetRelativeTransform(flangeLink);
+            var (px, py, pz, qx, qy, qz, qw) = ConvertTransformToUnity(relativeMatrix);
+            mounts[attached] = new MountInfo(mechanism.DisplayName, linkIndex, px, py, pz, qx, qy, qz, qw);
+        }
+
+        return mounts;
     }
 
     /// <summary>
