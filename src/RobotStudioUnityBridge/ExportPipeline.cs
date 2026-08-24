@@ -179,7 +179,7 @@ public static class ExportPipeline
             var name = SanitizeFileName(mechanism.DisplayName);
             var dir = Path.Combine(geometryDir, name);
             ExportMechanismGeometry(mechanism, dir);
-            mountsByMechanism.TryGetValue(mechanism, out var mount);
+            var mount = mountsByMechanism.TryGetValue(mechanism, out var foundMount) ? foundMount : (MountInfo?)null;
             mechanismEntries.Add((mechanism.DisplayName, $"geometry/{name}", mount));
         }
 
